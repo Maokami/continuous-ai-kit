@@ -33,5 +33,6 @@ Live execution, rather than that suppression, must verify those contexts on GitH
 The strict tracked-source/digest rules above apply to source scans. Triage reads a versioned JSON
 config and live GitHub facts instead; it checks package HEAD, validates config_id at publication,
 and recollects facts before writing. Its AI has Read only. Known secret values are checked in the
-analysis job; the deterministic publisher validates schema and secret patterns without receiving
-OAuth. Triage does not claim the scan source-digest guarantee.
+analysis job. The deterministic publisher revalidates digest, PR coverage, and enum values and
+neutralizes output, but does not recheck secret patterns and does not receive OAuth. Triage does
+not claim the scan source-digest guarantee.
