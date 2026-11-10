@@ -22,6 +22,15 @@ tools:
   github: false
 safe-outputs:
   staged: true
+  report-failure-as-issue: false
+  report-missing-tool:
+    create-issue: false
+  report-missing-data:
+    create-issue: false
+  report-incomplete:
+    create-issue: false
+  noop:
+    report-as-issue: false
   create-issue:
     max: 1
 ---

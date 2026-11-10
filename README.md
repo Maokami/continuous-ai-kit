@@ -50,7 +50,8 @@ python3 -I -m unittest discover -s tests -v
 ```
 
 Tests cover source pinning, exact quotations, malformed output, configuration boundaries, recovery,
-and compatibility with the original repositories. Live-run evidence is recorded separately.
+and compatibility with the original repositories. See the [live-run evidence](docs/adoption-evidence.md)
+for observed successes, validation failures, and remaining deployment limits.
 AI-reported file coverage does not prove the files were read, and passing validation does not prove
 an improvement is correct. Empty reports are valid.
 
