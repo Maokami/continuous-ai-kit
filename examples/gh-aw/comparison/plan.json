@@ -1,0 +1,14 @@
+{
+  "sha": "e0cd8279005656d966398615bfd707643036edc8",
+  "batch": 0,
+  "digest": "ecc1aac62775615db2fbdc5f33b7f2763e914b076cf7d78ad52bbc279b0b2831",
+  "required_files": [
+    "Kuratowski/AddEdge.lean",
+    "Kuratowski/AlternatingNeighbors.lean",
+    "Kuratowski/Basic.lean",
+    "Kuratowski/CommonNeighbors.lean"
+  ],
+  "run_id": "42820181521",
+  "requested_model": "claude-sonnet-5-5",
+  "policy": "read-only-v1"
+}
