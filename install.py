@@ -52,7 +52,7 @@ jobs:
     uses: Maokami/continuous-ai-kit/.github/workflows/scan-report.yml@{revision}
     with:
       config: {config_path}
-      default_branch: {branch}
+      default_branch: {json.dumps(branch)}
       batch: ${{{{ inputs.batch || 'auto' }}}}
       retry_failed: ${{{{ inputs.retry_failed || false }}}}
     secrets:

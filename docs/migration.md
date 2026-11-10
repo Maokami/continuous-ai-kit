@@ -29,3 +29,9 @@ never grants an agent permission to merge its own PR.
 Use the installer with adapter text and docs/*.md or a small source glob. Start manually, inspect
 the first artifact and report, and measure whether candidates save review time. No language-specific
 core change is required. See examples/non-lean for a small source fixture.
+
+SW migration uses an owner-created ordinary branch (not claude/ or a bot branch), since its scope
+guard correctly rejects workflow edits from autonomous research PRs. Preserve human approval.
+The old shell test extracted an inline publish step; replace it with caller-contract tests. The
+actual stale-exit regression moves to the kit. Keep the old script and compatibility tests for
+rollback, and restore the original caller if the first run fails.

@@ -23,6 +23,12 @@ class InstallTests(unittest.TestCase):
             self.assertIn("scan-report.yml@" + "a" * 40, workflow)
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
 
+    def test_yaml_ambiguous_branch_is_quoted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installer.install(Path(directory), "a" * 40, "docs", ["docs/*.md"], "text", "1.0")
+            workflow = Path(directory, ".github/workflows/continuous-ai-docs.yml").read_text()
+            self.assertIn('default_branch: "1.0"', workflow)
+
     def test_symlink_parent_and_bad_glob(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
             root = Path(directory)
