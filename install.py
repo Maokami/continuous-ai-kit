@@ -46,6 +46,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   scan:
+    if: github.ref == 'refs/heads/{branch}'
     permissions:
       contents: read
       issues: write

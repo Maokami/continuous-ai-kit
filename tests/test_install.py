@@ -28,6 +28,7 @@ class InstallTests(unittest.TestCase):
             installer.install(Path(directory), "a" * 40, "docs", ["docs/*.md"], "text", "1.0")
             workflow = Path(directory, ".github/workflows/continuous-ai-docs.yml").read_text()
             self.assertIn('default_branch: "1.0"', workflow)
+            self.assertIn("if: github.ref == 'refs/heads/1.0'", workflow)
 
     def test_symlink_parent_and_bad_glob(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
