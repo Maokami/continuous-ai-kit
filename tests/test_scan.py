@@ -121,6 +121,30 @@ class Tests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.validate(data)
 
+    def test_qualified_lean_declaration(self):
+        line = "theorem RotationSystem.exists_addEdge : True := by trivial"
+        sources = {**SOURCES, "Kuratowski/A.lean": "namespace Kuratowski\n" + line + "\n"}
+        with patch.object(m, "source", return_value=(sources, BATCHES, DIGEST)):
+            for name in ("exists_addEdge", "RotationSystem.exists_addEdge",
+                         "Kuratowski.RotationSystem.exists_addEdge"):
+                data = copy.deepcopy(RESULT)
+                data["candidates"][0]["declaration"] = name
+                data["candidates"][0]["evidence"][0]["quote"] = line
+                with self.subTest(name=name):
+                    self.assertEqual(self.validate(data), data)
+
+    def test_qualified_declaration_still_requires_exact_leaf_and_kind(self):
+        for declaration in ("theorem RotationSystem.foobar", "theorem RotationSystem.foo_extra",
+                            "instance RotationSystem.foo", "theorem RotationSystem.bar"):
+            line = declaration + " : True := by trivial"
+            sources = {**SOURCES, "Kuratowski/A.lean": "namespace K\n" + line + "\n"}
+            data = copy.deepcopy(RESULT)
+            data["candidates"][0]["evidence"][0]["quote"] = line
+            with self.subTest(declaration=declaration), \
+                    patch.object(m, "source", return_value=(sources, BATCHES, DIGEST)), \
+                    self.assertRaises(ValueError):
+                self.validate(data)
+
     def test_duplicate_and_excess_candidates(self):
         for candidates in ([CANDIDATE] * 2, [CANDIDATE] * 4):
             with self.assertRaises(ValueError):

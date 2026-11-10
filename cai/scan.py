@@ -201,8 +201,11 @@ def validate(raw, plan, conclusion, secrets=()):
             text(c[name], limit)
         declaration = c["declaration"].split(".")[-1]
         if CFG["adapter"] == "lean":
+            # Match a declaration's leaf, including explicitly qualified source names.
+            # This is a lexical check, not Lean namespace resolution or type checking.
             if not re.search(r"\b(?:theorem|lemma|def|abbrev|structure|inductive)\s+"
-                             + re.escape(declaration) + r"(?=\s|[({:\[])", sources[c["path"]]):
+                             + r"(?:[\w']+\.)*" + re.escape(declaration)
+                             + r"(?=\s|[({:\[])", sources[c["path"]]):
                 raise ValueError("The Lean declaration does not occur in the source")
         elif c["declaration"] not in sources[c["path"]] or c["risk"] != "manual":
             raise ValueError("Text scans require an exact source anchor and manual review")
