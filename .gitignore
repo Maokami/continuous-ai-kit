@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.continuous-ai/
+.continuous-ai-kit/
