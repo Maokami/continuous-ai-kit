@@ -92,3 +92,12 @@ unmeasured. Compilation is not evidence of those properties.
 
 Self-reported coverage and valid quotations do not prove that an improvement is correct. Human
 review decides whether to adopt a candidate; this kit does not generate or merge code changes.
+
+## First private consumer — 2026-11-14
+
+`Maokami/poorfolio` (private) called `pr-triage.yml` at `765cb2ed08ad00dd0b2336b08357fa12c229a947`.
+[Run 43555256611](https://github.com/Maokami/poorfolio/actions/runs/43555256611) failed in `collect`:
+`gh pr list --json statusCheckRollup` returned `Resource not accessible by integration
+(…statusCheckRollup…checkSuite.workflowRun)`. The collect and publish jobs now request
+`actions: read`; a caller must grant it as well. Earlier consumers were public repositories, where
+this field is readable without the permission. The fix has not yet been observed in a live run.

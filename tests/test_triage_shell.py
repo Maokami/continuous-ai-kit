@@ -91,10 +91,10 @@ class Structure(unittest.TestCase):
             return dict(entries)
         perms = {name: permissions(block) for name, block in js.items()}
         self.assertEqual(perms["collect"], {"contents": "read", "pull-requests": "read", "issues": "read",
-                                            "checks": "read", "statuses": "read"})
+                                            "checks": "read", "statuses": "read", "actions": "read"})
         self.assertEqual(perms["summarize"], {"contents": "read"})
         self.assertEqual(perms["publish"], {"contents": "read", "pull-requests": "write", "issues": "write",
-                                            "checks": "read", "statuses": "read"})
+                                            "checks": "read", "statuses": "read", "actions": "read"})
         self.assertNotIn("id-token", TEXT)
         self.assertEqual([n for n, b in js.items() if "secrets." in b], ["summarize"])
 
