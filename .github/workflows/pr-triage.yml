@@ -6,6 +6,8 @@
 #   labels and the bot-owned report issue change. Nothing is merged or closed and no branch is modified.
 # Callers must pin this file by commit SHA, pass default_branch and config explicitly, provide the named
 # OAuth secret, and serialize runs with a concurrency group per repository and label namespace.
+# collect and publish request actions: read because `gh pr list --json statusCheckRollup` resolves
+# checkSuite.workflowRun, which a private consumer cannot read without it. Callers must grant it too.
 name: PR triage report
 
 on:
@@ -39,6 +41,7 @@ jobs:
       issues: read
       checks: read
       statuses: read
+      actions: read
     outputs:
       facts_changed: ${{ steps.collect.outputs.facts_changed }}
       label_drift: ${{ steps.collect.outputs.label_drift }}
@@ -176,6 +179,7 @@ jobs:
       issues: write
       checks: read
       statuses: read
+      actions: read
     env:
       CAI_CONFIG: ${{ inputs.config }}
     steps:
