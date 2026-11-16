@@ -24,6 +24,10 @@ choose useful recurring work, and write an adoption brief. The agent and a human
 creates it. See [agent + CLI onboarding](docs/onboarding.md) and the
 [case review, design, and next adapters](docs/template-design.md).
 
+The Kit also uses this path for its own [maintenance pilot](docs/self-maintenance.md): bounded
+contract-drift findings, human disposition, and linked tested fixes. Its scheduled job stays gated
+until the manual pilot and unchanged-input check have been evaluated.
+
 ### Preview a source scan
 
 Clone this **public** repository and choose a reviewed full commit SHA. From a trusted checkout:

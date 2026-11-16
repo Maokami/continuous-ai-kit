@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "lane": "kit-maintenance",
+  "default_branch": "main",
+  "source_globs": [
+    "README.md",
+    "install.py",
+    "onboard.py",
+    "cai/*.py",
+    "cli.py",
+    "schema.json",
+    "templates/prompts/*.md",
+    "tests/test_*.py",
+    "docs/onboarding.md",
+    "docs/scan.md",
+    "docs/triage.md",
+    "docs/security.md",
+    "skills/adopt-continuous-ai/SKILL.md",
+    ".github/workflows/scan-report.yml",
+    ".github/workflows/pr-triage.yml"
+  ],
+  "prompt_file": ".github/continuous-ai/kit-maintenance.md",
+  "adapter": "text",
+  "model": "claude-sonnet-5-5",
+  "batch_size": 4,
+  "max_turns": 32,
+  "policy_files": [
+    "AGENTS.md"
+  ]
+}

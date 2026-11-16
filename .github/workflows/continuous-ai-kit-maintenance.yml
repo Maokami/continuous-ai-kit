@@ -1,0 +1,33 @@
+name: Continuous AI (kit-maintenance)
+on:
+  schedule:
+    # Monday/Thursday 09:37 KST; enabled after the manual pilot is evaluated.
+    - cron: '37 0 * * 1,4'
+  workflow_dispatch:
+    inputs:
+      batch:
+        type: string
+        default: auto
+      retry_failed:
+        type: boolean
+        default: false
+permissions: {}
+concurrency:
+  group: continuous-ai-kit-maintenance
+  cancel-in-progress: false
+jobs:
+  scan:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.CAI_SELF_MAINTENANCE_ENABLED == 'true')
+    permissions:
+      contents: read
+      issues: write
+    uses: Maokami/continuous-ai-kit/.github/workflows/scan-report.yml@3b92523aa657b35f64130c2eed4a5446a1b52423
+    with:
+      config: .github/continuous-ai/kit-maintenance.json
+      default_branch: "main"
+      batch: ${{ inputs.batch || 'auto' }}
+      retry_failed: ${{ inputs.retry_failed || false }}
+    secrets:
+      claude_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
