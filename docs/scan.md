@@ -31,3 +31,23 @@ known v0 limitations, not claims of exactly-once execution.
 The text adapter requires a literal source anchor and manual risk. The Lean adapter checks a
 named declaration's presence; it does not elaborate the proposal or verify theorem preservation.
 Both require exact source quotations and full required-file coverage in structured output.
+
+## Diagnosing analysis failures
+
+The analysis job checks for an absent OAuth token or characters outside visible ASCII before invoking
+Claude. It rejects these values rather than silently trimming them and prints only a fixed category.
+This checks input shape, not authentication, model access, or available subscription usage. It occurs
+after reservation, so a failure still consumes an attempt.
+
+If Claude fails, `cai/diagnostics.py` reads the pinned Action's temporary execution record and emits
+only a fixed category: `authentication_error`, `usage_limit`, `model_unavailable`, `turn_limit`,
+`structured_output_missing`, `upstream_action_failure`, `unknown_analysis_error`, or
+`execution_record_unavailable`. These are troubleshooting hints based on the SDK result, not trusted
+authorization or semantic verdicts. They never make a failed run successful or authorize a retry.
+Result text can itself be model-influenced; a category is not proof about the account's status.
+
+Raw SDK messages, tool output, tokens, and error text are neither echoed nor uploaded by this helper.
+Malformed, missing, symlinked or oversized execution records produce `execution_record_unavailable`.
+The existing Action's full-output/report switches remain disabled. For token input errors, correct
+the Actions secret; for usage limits, verify reset/availability before using the one explicit retry.
+Do not change input digests merely to obtain additional attempts.
