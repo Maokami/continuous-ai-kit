@@ -17,7 +17,7 @@ reviewed, tested improvement is a separate outcome.
 | Runtime pin | `3b92523aa657b35f64130c2eed4a5446a1b52423`; deliberately independent of the source revision being inspected |
 | Model bounds | `claude-sonnet-5-5`, 32 turns, analysis step 10 minutes, 4 required source files per dispatch, at most 3 candidates |
 | Writes | One state issue and deduplicated candidate reports; no source edits, PRs, approvals, merges, or branch deletion |
-| Validation | Exact source SHA, package/policy/source digest, source coverage, literal anchors/quotes, schema, fresh remote head before publication |
+| Validation | Exact source SHA, package/policy/source digest, declared `reviewed_files` coverage (not proof of reading), literal anchors/quotes, schema, fresh remote head before publication |
 | Cadence | Manual pilot, then Monday/Thursday 00:37 UTC (09:37 KST) once `CAI_SELF_MAINTENANCE_ENABLED=true` |
 | Retry | Diagnose first; one explicit retry for a failed batch/digest. No retry of successful batches |
 | Stop switch | Set `CAI_SELF_MAINTENANCE_ENABLED=false`; this stops future scheduled analysis, not an already running job or manual dispatch |
@@ -34,13 +34,17 @@ expanding scope, model, or frequency. No monetary cap or automatic quality-based
 
 ## Evaluation and improvement loop
 
-1. Run batch `2` manually on `main`: it includes triage/CLI and onboarding/scan documentation in the
+1. Confirm `CLAUDE_CODE_OAUTH_TOKEN` is configured before dispatching. Once `prepare` reserves a
+   batch, a failed analysis consumes an attempt; provisioning failures should not spend this budget.
+   Run batch `2` manually on `main`: it includes triage/CLI and onboarding/scan documentation in the
    initial sorted selection. Check the produced plan rather than relying on that ordering forever.
 2. Verify artifacts and the report against the exact checked-out source. Record operational success
    separately from whether the maintainer accepts any finding.
-3. Dispatch the same batch with unchanged source/policy/runtime and `retry_failed=false`.
+3. Only after successful analysis, validation, publication and a `success` state in the ledger,
+   dispatch the same batch with unchanged source/policy/runtime and `retry_failed=false`.
    Confirm analysis/publication skip and the state/report remain unchanged. `auto` can advance to a
-   different batch and is not a no-op test.
+   different batch and is not a no-op test. A skip after a failed attempt is retry suppression,
+   not evidence of a successful pilot or successful-result deduplication.
 4. For each accepted finding, create a scoped fix through the normal PR process. Record the original
    report/candidate ID, reviewed source, reproduction, fix, tests and merged revision. A proposal is
    not implementation authorization for the scheduled agent.
@@ -58,6 +62,13 @@ Do not increase issue count to satisfy the target. Do not infer saved human time
 | Run and source/runtime revision | Validation and publication | Human disposition | Fix/reproduction evidence | Runtime/usage and reviewer effort |
 | --- | --- | --- | --- | --- |
 | Local scaffolding | Shared CLI generated and preflighted the lane | Pilot prepared | Local tests and workflow lint; no inference claimed | Not a model run |
+| [Kit CI 43808743961](https://github.com/Maokami/continuous-ai-kit/actions/runs/43808743961), source `b8d5afda6e9b0fafd925b4cd546d86f1f2bece7a` | 108 tests and workflow lint passed on the PR head | Infrastructure checks only | Includes five generated caller variants | Not a model run |
+| Local pinned-runtime preparation, same source; runtime `3b92523aa657b35f64130c2eed4a5446a1b52423` | Config, policy, source and batch `2` accepted by the exact pinned package | Input compatibility checked | Fake GitHub API; zero network calls or remote writes. Required files: `cai/triage.py`, `cli.py`, `docs/onboarding.md`, `docs/scan.md` | Not a model run |
+
+A read-only `agy` advisory review of the self-maintenance patch and pinned workflow/scanner found
+no blocking issue. Its authentication-before-dispatch and successful-pilot-before-no-op clarifications
+are incorporated above. This was a supplied-source review, not an independent execution or an
+OAuth test. The Claude advisory route was unavailable due to the subscription's five-hour limit.
 
 Authentication, live pilot, no-op result, and schedule activation are pending. This status will be
 updated only from observed runs. The repository originally had no `CLAUDE_CODE_OAUTH_TOKEN` secret.

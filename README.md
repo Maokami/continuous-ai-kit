@@ -25,8 +25,9 @@ creates it. See [agent + CLI onboarding](docs/onboarding.md) and the
 [case review, design, and next adapters](docs/template-design.md).
 
 The Kit also uses this path for its own [maintenance pilot](docs/self-maintenance.md): bounded
-contract-drift findings, human disposition, and linked tested fixes. Its scheduled job stays gated
-until the manual pilot and unchanged-input check have been evaluated.
+contract-drift findings, human disposition, and linked tested fixes. Its scheduled job stays disabled
+until the maintainer sets `CAI_SELF_MAINTENANCE_ENABLED=true` after evaluating the manual pilot and
+unchanged-input check.
 
 ### Preview a source scan
 
