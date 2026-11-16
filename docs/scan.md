@@ -34,7 +34,7 @@ Both require exact source quotations and full required-file coverage in structur
 
 ## Diagnosing analysis failures
 
-The analysis job checks for an absent OAuth token or whitespace/control characters before invoking
+The analysis job checks for an absent OAuth token or characters outside visible ASCII before invoking
 Claude. It rejects these values rather than silently trimming them and prints only a fixed category.
 This checks input shape, not authentication, model access, or available subscription usage. It occurs
 after reservation, so a failure still consumes an attempt.
@@ -44,6 +44,7 @@ only a fixed category: `authentication_error`, `usage_limit`, `model_unavailable
 `structured_output_missing`, `upstream_action_failure`, `unknown_analysis_error`, or
 `execution_record_unavailable`. These are troubleshooting hints based on the SDK result, not trusted
 authorization or semantic verdicts. They never make a failed run successful or authorize a retry.
+Result text can itself be model-influenced; a category is not proof about the account's status.
 
 Raw SDK messages, tool output, tokens, and error text are neither echoed nor uploaded by this helper.
 Malformed, missing, symlinked or oversized execution records produce `execution_record_unavailable`.

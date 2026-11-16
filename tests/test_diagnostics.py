@@ -19,19 +19,26 @@ class DiagnosticsTests(unittest.TestCase):
     def test_token_checks_do_not_normalize_bad_values(self):
         self.assertEqual(D.token_category("opaque-token"), "token_present")
         self.assertEqual(D.token_category(""), "missing_oauth_token")
-        for value in (" token", "token\n", "to\rken", "to\tken", "token\x00"):
-            self.assertEqual(D.token_category(value), "oauth_token_whitespace")
+        for value in (" token", "token\n", "to\rken", "to\tken", "token\x00", "x\x7f",
+                      "x\u00a0", "x\u200b", "x\ufeff", "x\x80"):
+            self.assertEqual(D.token_category(value), "oauth_token_invalid_characters")
 
     def test_known_provider_errors_and_hidden_result(self):
         for error, expected in (("Invalid API key · Please run /login", "authentication_error"),
                                 ("You've hit your limit · resets later", "usage_limit"),
                                 ("429 rate_limit_error", "usage_limit"),
+                                ("API Error: 401", "authentication_error"),
+                                ("HTTP 429", "usage_limit"),
+                                ("Credit balance is too low", "usage_limit"),
                                 ("model_not_found", "model_unavailable")):
             result = D.classify([{"type": "result", "is_error": True, "result": error}])
             self.assertEqual(result["category"], expected)
         hidden = {"type": "result", "subtype": "success", "is_error": True,
                   "duration_ms": 224, "num_turns": 1, "modelUsage": {}}
         self.assertEqual(D.classify([hidden])["category"], "unknown_analysis_error")
+        self.assertEqual(D.classify([{"type": "result", "is_error": True,
+                                     "result": "request ID abc429xyz failed"}])["category"],
+                         "unknown_analysis_error")
 
     def test_ignore_source_and_tool_text_when_classifying(self):
         data = [{"type": "user", "content": "invalid_api_key"},
@@ -78,7 +85,7 @@ class DiagnosticsTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-I", str(ROOT / "cai/diagnostics.py"), "check-token"],
                                 env=dict(os.environ, CAI_OAUTH_TOKEN=value), text=True, capture_output=True)
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(json.loads(result.stdout), {"category": "oauth_token_whitespace"})
+        self.assertEqual(json.loads(result.stdout), {"category": "oauth_token_invalid_characters"})
         self.assertNotIn("private-value", result.stdout + result.stderr)
 
 

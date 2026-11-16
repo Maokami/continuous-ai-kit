@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 MAX_BYTES = 4_000_000
@@ -13,8 +14,8 @@ UNAVAILABLE = {"category": "execution_record_unavailable"}
 def token_category(token):
     if not token:
         return "missing_oauth_token"
-    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in token):
-        return "oauth_token_whitespace"
+    if any(not 33 <= ord(c) <= 126 for c in token):
+        return "oauth_token_invalid_characters"
     return "token_present"
 
 
@@ -36,12 +37,15 @@ def classify(messages):
     if isinstance(errors, list):
         fields.extend(errors)
     message = " ".join(x for x in fields if isinstance(x, str)).lower()
-    if any(s in message for s in ("usage limit", "rate_limit", "rate limit", "quota", "429")) or (
-            "hit your" in message and "limit" in message):
+    if (any(s in message for s in ("usage limit", "rate_limit", "rate limit", "quota",
+                                  "credit balance is too low"))
+            or re.search(r"\b(?:api(?: error)?|status(?: code)?|http(?: error)?)[: ]+429\b", message)
+            or ("hit your" in message and "limit" in message)):
         category = "usage_limit"
     elif any(s in message for s in ("authentication_error", "invalid api key", "invalid_api_key",
                                     "please run /login", "not logged in", "token has expired",
-                                    "invalid x-api-key", "invalid bearer")):
+                                    "invalid x-api-key", "invalid bearer")) or re.search(
+            r"\b(?:api(?: error)?|status(?: code)?|http(?: error)?)[: ]+(?:401|403)\b", message):
         category = "authentication_error"
     elif "model" in message and any(s in message for s in (
             "not_found", "not found", "does not exist", "not have access", "not available")):
