@@ -64,14 +64,19 @@ Do not increase issue count to satisfy the target. Do not infer saved human time
 | Local scaffolding | Shared CLI generated and preflighted the lane | Pilot prepared | Local tests and workflow lint; no inference claimed | Not a model run |
 | [Kit CI 43808743961](https://github.com/Maokami/continuous-ai-kit/actions/runs/43808743961), source `b8d5afda6e9b0fafd925b4cd546d86f1f2bece7a` | 108 tests and workflow lint passed on the PR head | Infrastructure checks only | Includes five generated caller variants | Not a model run |
 | Local pinned-runtime preparation, same source; runtime `3b92523aa657b35f64130c2eed4a5446a1b52423` | Config, policy, source and batch `2` accepted by the exact pinned package | Input compatibility checked | Fake GitHub API; zero network calls or remote writes. Required files: `cai/triage.py`, `cli.py`, `docs/onboarding.md`, `docs/scan.md` | Not a model run |
+| [First live pilot 43809707993](https://github.com/Maokami/continuous-ai-kit/actions/runs/43809707993), source `d7c3d07ee96108dd44d32aad0125132c4b1cdd97`; runtime `3b92523aa657b35f64130c2eed4a5446a1b52423`; batch `2` | Preparation passed; Claude returned `is_error=true` without structured output. Validation/publication skipped; failure recording passed | No candidates to evaluate | [State #7](https://github.com/Maokami/continuous-ai-kit/issues/7) records attempt 1 as error; no retry dispatched | SDK reported 1 turn, 224 ms, $0 API-equivalent estimate and empty model usage; no successful analysis claimed |
 
 A read-only `agy` advisory review of the self-maintenance patch and pinned workflow/scanner found
 no blocking issue. Its authentication-before-dispatch and successful-pilot-before-no-op clarifications
 are incorporated above. This was a supplied-source review, not an independent execution or an
 OAuth test. The Claude advisory route was unavailable due to the subscription's five-hour limit.
 
-Authentication, live pilot, no-op result, and schedule activation are pending. This status will be
-updated only from observed runs. The repository originally had no `CLAUDE_CODE_OAUTH_TOKEN` secret.
+The OAuth secret was registered on 2026-11-16. The first live pilot failed before producing a result;
+successful authentication/analysis, a successful-result no-op check, and schedule activation remain
+pending. The original log hid the provider error text, so token format, authentication/usage limits,
+and upstream failures could not be distinguished. The scan now adds fixed-category diagnostics
+without exposing the raw SDK record. This is an observability improvement, not yet a root-cause fix.
+The repository originally had no `CLAUDE_CODE_OAUTH_TOKEN` secret.
 Follow the official [Claude Code GitHub Actions setup](https://code.claude.com/docs/en/github-actions)
 and keep the token value in Actions secrets, never in this record.
 

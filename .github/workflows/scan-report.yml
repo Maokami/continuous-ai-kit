@@ -97,6 +97,10 @@ jobs:
         with:
           name: cai-plan-${{ needs.prepare.outputs.lane }}-${{ github.run_attempt }}
           path: .continuous-ai/
+      - name: Check OAuth input without disclosing it
+        env:
+          CAI_OAUTH_TOKEN: ${{ secrets.claude_oauth_token }}
+        run: python3 -I ./.continuous-ai-kit/cai/diagnostics.py check-token
       - name: Read-only analysis
         id: claude
         timeout-minutes: 10
@@ -123,6 +127,9 @@ jobs:
             --setting-sources user
             --disable-slash-commands
             --json-schema '${{ needs.prepare.outputs.schema }}'
+      - name: Classify analysis failure without raw output
+        if: failure() && steps.claude.outcome == 'failure'
+        run: python3 -I ./.continuous-ai-kit/cai/diagnostics.py failure
       - name: Validate result
         env:
           CAI_TOOL_SHA: ${{ job.workflow_sha }}
