@@ -11,7 +11,7 @@ condition matter more than running frequently.
 | Lane | Reads | AI result | Deterministic writes |
 | --- | --- | --- | --- |
 | Source scan | Pinned tracked source and policy | At most three cited improvement candidates | Deduplicated report issues and a state issue |
-| PR triage | Current PR/CI/review facts | Priority and next action | Managed labels and one report issue |
+| PR triage | Current PR/CI/review facts | Priority and next action | Managed labels, one report issue and quota recovery state |
 
 This alpha does not edit source, open PRs, approve reviews, merge, or delete branches.
 Repository-specific PR review and merge automation remains in each consumer.
@@ -25,7 +25,7 @@ creates it. See [agent + CLI onboarding](docs/onboarding.md) and the
 [case review, design, and next adapters](docs/template-design.md).
 
 The Kit also uses this path for its own [maintenance pilot](docs/self-maintenance.md): bounded
-contract-drift findings, human disposition, and linked tested fixes. Its scheduled job stays disabled
+contract-drift findings, human disposition, and linked tested fixes. Its new-work schedule stays disabled
 until the maintainer sets `CAI_SELF_MAINTENANCE_ENABLED=true` after evaluating the manual pilot and
 unchanged-input check.
 
@@ -46,7 +46,10 @@ The installer never commits, pushes, sets secrets, or starts a run.
 
 Set `CLAUDE_CODE_OAUTH_TOKEN` in the consumer's Actions secrets using the official Claude setup-token
 flow. Keep secret values out of issues, config files, and chat. The caller passes this secret by name;
-only the analysis job receives it. Start manually. Add a schedule only after checking usefulness.
+only the analysis job receives it. Start manually. Generated callers include hourly recovery checks
+that only resume quota-deferred work; add a new-work schedule after checking usefulness.
+[Automatic quota recovery](docs/quota-recovery.md) persists cooldowns, resumes from current evidence,
+and separates quota waits from ordinary failures. Authentication/billing errors still need attention.
 
 **Required:** one caller `concurrency` group per lane with `cancel-in-progress: false`, full SHA pins,
 and matching default branches in the caller and config. Do not create a second scheduled caller for

@@ -120,3 +120,10 @@ python3 -I cai/triage.py publish  --repo O/R --snapshot snap.json [--ai ai.json]
 - **원장 신뢰 근거:** 봇 작성 여부는 "저장소 쓰기 권한"을 뜻할 뿐 이 레인을 뜻하지 않는다. 형식 검사와
   fail-closed로 피해를 줄인다.
 - **GITHUB_TOKEN으로 쓴 라벨·이슈는 다른 workflow를 깨우지 않는다.** 연쇄 실행이 없으며, 의도한 동작이다.
+
+## 사용량 한도 복구
+
+Reusable workflow는 [quota recovery](quota-recovery.md)를 사용한다. 한도 초과 시 별도의 봇 소유
+복구 이슈에 다음 재개 시각을 저장하고, 이후 trigger에서 현재 PR 사실을 새로 수집한다.
+생성 caller의 매시간 schedule은 대기 작업 복구만 수행한다. 대기 중에는 AI 호출이나 보고서 게시가 없다.
+수집 job은 수동 `reset_quota` 처리를 위해 `issues: write`를 가지며, AI job은 계속 읽기 전용이다.

@@ -19,15 +19,16 @@ reviewed, tested improvement is a separate outcome.
 | Writes | One state issue and deduplicated candidate reports; no source edits, PRs, approvals, merges, or branch deletion |
 | Validation | Exact source SHA, package/policy/source digest, declared `reviewed_files` coverage (not proof of reading), literal anchors/quotes, schema, fresh remote head before publication |
 | Cadence | Manual pilot, then Monday/Thursday 00:37 UTC (09:37 KST) once `CAI_SELF_MAINTENANCE_ENABLED=true` |
-| Retry | Diagnose first; one explicit retry for a failed batch/digest. No retry of successful batches |
-| Stop switch | Set `CAI_SELF_MAINTENANCE_ENABLED=false`; this stops future scheduled analysis, not an already running job or manual dispatch |
+| Retry | Automatic bounded quota deferral; one explicit retry for ordinary failures. No retry of successful batches |
+| Stop switch | `CAI_SELF_MAINTENANCE_ENABLED=false` stops new scheduled work; `CAI_QUOTA_RECOVERY_DISABLED=true` stops all scheduled work including recovery. Neither cancels an active run or manual dispatch |
 
 The source selection excludes this evaluation record, the self-caller, and the lane's own config and
 prompt. Recording observations here therefore does not, by itself, invalidate the scan's source
 digest. Editing the actual lane policy/prompt still changes its policy digest. The analysis tool's
 read scope is broader than the selected source list; the list is not a filesystem sandbox.
 
-The scheduled caller is present but its job skips until the repository variable is explicitly enabled.
+The regular new-work schedule skips until `CAI_SELF_MAINTENANCE_ENABLED` is enabled.
+Hourly recovery checks only resume an existing quota wait, even while new-work scheduling is off.
 Two scheduled dispatches per week advance two batches, not two exhaustive audits. Empty candidates
 are valid. Keep cadence unchanged during the initial four evaluated runs; measure usage before
 expanding scope, model, or frequency. No monetary cap or automatic quality-based stop is implemented.
@@ -85,7 +86,7 @@ No further scan inference or automatic retry was scheduled. The diagnostic impro
 the Kit on itself and inspecting its failure; it is not an AI-generated maintenance candidate and
 does not satisfy the accepted-finding target.
 
-## Resume after usage is available
+## Historical resume procedure before quota recovery
 
 Confirm the subscription can serve the configured model, then use the existing explicit retry:
 
@@ -111,3 +112,12 @@ and keep the token value in Actions secrets, never in this record.
 
 Source review and deterministic tests cannot establish that the model finds useful bugs. Conversely,
 one useful report does not establish recall, absence of defects, or safety of unrelated autonomous writes.
+
+## Automatic recovery upgrade
+
+The updated caller adds an hourly recovery-only trigger and the runtime now records quota failures as
+`waiting_for_quota` with a persistent cooldown. See [policy and migration](quota-recovery.md).
+The two pilot failures above remain historical evidence from the old runtime; their `error` entries
+are not silently reclassified. After the reviewed runtime/caller are deployed, start a normal manual
+pilot. If it hits a limit, subsequent recovery checks should resume automatically without waiting on
+a runner. Record that live sequence before claiming end-to-end subscription recovery has passed.

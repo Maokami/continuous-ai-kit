@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 from cai.github import GitHub
-from cai import config
+from cai import config, recovery
 from cai.common import bounded_text, digest_json, neutralize, quote_at_line, reject_secrets
 
 TITLE = "[Continuous AI] Lean 개선 조사 상태"
@@ -86,18 +86,21 @@ def load_state(issues):
         return None, {"version": 1, "batches": {}, "seen": []}
     issue = matches[0]
     state = json.loads(issue["body"].split("\n", 1)[1])
-    if (set(state) != {"version", "batches", "seen"} or state["version"] != 1
+    if (not isinstance(state, dict)
+            or set(state) not in ({"version", "batches", "seen"}, {"version", "batches", "seen", "quota"})
+            or state["version"] != 1
             or not isinstance(state["batches"], dict) or not isinstance(state["seen"], list)
             or len(state["seen"]) > 300
             or any(not isinstance(k, str) or not re.fullmatch(r"[0-9a-f]{64}", k)
                    for k in state["seen"])):
         raise ValueError("상태 이슈 형식이 잘못되었습니다.")
+    recovery.validate(state.get("quota", {}))
     for key, entry in state["batches"].items():
         if (not re.fullmatch(r"[0-9]{1,3}", key) or not isinstance(entry, dict)
                 or set(entry) != {"digest", "attempts", "status", "run_id"}
                 or not re.fullmatch(r"[0-9a-f]{64}", entry["digest"])
                 or type(entry["attempts"]) is not int or not 1 <= entry["attempts"] <= 2
-                or entry["status"] not in {"pending", "success", "error"}
+                or entry["status"] not in {"pending", "success", "error", "waiting_for_quota"}
                 or not re.fullmatch(r"[0-9]+", entry["run_id"])):
             raise ValueError("조사 이력이 잘못되었습니다.")
     return issue["number"], state
@@ -118,6 +121,7 @@ def select_batch(batches, state, digest, requested, retry):
         if retry:
             raise ValueError("재시도는 batch 번호를 지정해야 합니다.")
         options = sorted(range(len(batches)), key=lambda i: (
+            state["batches"].get(str(i), {}).get("status") != "waiting_for_quota",
             int(state["batches"].get(str(i), {}).get("run_id", "0")), i))
     elif re.fullmatch(r"[0-9]{1,3}", requested) and int(requested) < len(batches):
         options = [int(requested)]
@@ -127,6 +131,8 @@ def select_batch(batches, state, digest, requested, retry):
         old = state["batches"].get(str(index), {})
         if old.get("digest") != digest:
             return index, 1
+        if old.get("status") == "waiting_for_quota":
+            return index, old["attempts"]
         if retry and old.get("status") != "success" and old["attempts"] < 2:
             return index, old["attempts"] + 1
     return None
@@ -144,6 +150,16 @@ def prepare(api):
         return {"run": "false"}
     issues = all_issues(api)
     number, state = load_state(issues)
+    if os.environ.get("RESET_QUOTA") == "true":
+        state.pop("quota", None)
+        if number is not None:
+            save_state(api, number, state)
+    quota = recovery.gate(state.get("quota", {}),
+                          recovery_only=os.environ.get("RECOVERY_ONLY") == "true",
+                          run_id=os.environ["GITHUB_RUN_ID"])
+    if quota["run"] != "true":
+        recovery.emit(quota)
+        return {"run": "false"}
     selected = select_batch(batches, state, digest, requested, retry == "true")
     if selected is None:
         return {"run": "false"}
@@ -278,6 +294,8 @@ def publish(api):
             "title": f"[Continuous AI] {CFG['lane']} batch {plan['batch']} ({len(fresh)})", "body": body})
     state["seen"] += [candidate_id(c) for c in fresh if candidate_id(c) not in state["seen"]]
     entry["status"] = "success"
+    if "quota" in state:
+        state["quota"] = recovery.record(state["quota"], "success", plan["run_id"])
     save_state(api, number, state)
     print(f"candidates={len(data['candidates'])} new={len(fresh)}")
 
@@ -287,7 +305,20 @@ def error(api):
     if number is not None:
         for entry in state["batches"].values():
             if entry["run_id"] == os.environ["GITHUB_RUN_ID"] and entry["status"] == "pending":
-                entry["status"] = "error"
+                category = os.environ.get("CAI_FAILURE_CATEGORY", "")
+                if category == "usage_limit":
+                    raw_reset = os.environ.get("CAI_RESET_AT", "")
+                    reset = int(raw_reset) if re.fullmatch(r"[0-9]{1,10}", raw_reset) else None
+                    state["quota"] = recovery.record(state.get("quota", {}), category,
+                                                     entry["run_id"], reset_at=reset,
+                                                     scope=api.repo + CFG["lane"])
+                    entry["status"] = "waiting_for_quota"
+                    recovery.emit({"recovery_status": state["quota"]["status"],
+                                   "next_attempt_at": str(state["quota"]["next_attempt_at"])})
+                else:
+                    entry["status"] = "error"
+                    if "quota" in state:
+                        state["quota"] = recovery.record(state["quota"], category, entry["run_id"])
         save_state(api, number, state)
 
 

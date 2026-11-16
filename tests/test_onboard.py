@@ -76,7 +76,10 @@ class OnboardingTests(unittest.TestCase):
                     self.assertTrue(config.tracked_bytes(cfg["prompt_file"]))
                 finally:
                     os.chdir(old)
-        self.assertNotIn("schedule:", (self.root / ".github/workflows/continuous-ai-docs.yml").read_text())
+        workflow = (self.root / ".github/workflows/continuous-ai-docs.yml").read_text()
+        self.assertIn("- cron: '17 * * * *'", workflow)
+        self.assertIn("recovery_only: ${{ github.event_name == 'schedule' && github.event.schedule == '17 * * * *' }}", workflow)
+        self.assertIn("vars.CAI_QUOTA_RECOVERY_DISABLED", workflow)
 
     def test_triage_requires_explicit_checks_and_round_trips(self):
         missing = self.cli("triage", "--write")

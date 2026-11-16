@@ -19,8 +19,9 @@
 ## CLI 경로
 
 Python 3.10+가 필요하다. `KIT`에는 이 onboarding 코드가 들어 있는 **신뢰하는 로컬 checkout**을 지정한다.
-아래 `--ref`는 reusable runtime을 고정하는 기존 공개 commit이며, 새 onboarding 파일의 배포를 뜻하지 않는다.
-향후 업데이트 때는 package diff를 검토하고 해당 SHA를 함께 변경한다.
+아래 `--ref`에는 자동 quota recovery가 포함된 검토 완료 runtime의 전체 SHA를 넣는다.
+생성기만 새 버전으로 바꾸고 과거 runtime SHA를 사용하면 새 입력을 지원하지 못한다.
+업데이트 때는 package diff를 검토하고 해당 SHA를 함께 변경한다.
 
 ```sh
 KIT=/path/to/continuous-ai-kit
@@ -28,7 +29,7 @@ REPO=/path/to/consumer
 python3 -I "$KIT/onboard.py" inspect "$REPO"
 
 python3 -I "$KIT/onboard.py" scan "$REPO" \
-  --ref 3b92523aa657b35f64130c2eed4a5446a1b52423 \
+  --ref "$REVIEWED_KIT_SHA" \
   --default-branch main --lane docs-consistency --profile docs \
   --source-glob 'docs/*.md' --policy-file AGENTS.md
 ```
@@ -58,7 +59,7 @@ PR triage는 **필수 check의 정확한 이름**을 반복해서 명시한다:
 
 ```sh
 python3 -I "$KIT/onboard.py" triage "$REPO" \
-  --ref 3b92523aa657b35f64130c2eed4a5446a1b52423 \
+  --ref "$REVIEWED_KIT_SHA" \
   --default-branch main --lane pr-triage \
   --required-check 'Unit tests' --required-check 'Lint'
 ```
@@ -87,9 +88,13 @@ merge 권한이나 승인이 되지 않는다. 공개/비공개 repo 모두를 �
 6. 담당자가 후보별 채택/기각/중복/보류와 검토 시간을 기록한다. 초기에 한두 작업으로 시작하는 것을 권하지만
    사용자 목적에 맞춰 조정한다. 성공 기준을 만족한 뒤에만 일정과 작업량을 늘린다.
 
-실패한 scan은 원인을 진단하고 같은 batch의 명시적 retry 한 번까지만 허용한다. source/policy/package 변경은
+일반 실패한 scan은 원인을 진단하고 같은 batch의 명시적 retry 한 번까지만 허용한다. source/policy/package 변경은
 새 digest를 만든다. 이를 무제한 재시도 수단으로 쓰지 않는다. schedule 제거와 새 dispatch 중지는 운영자가 한다.
-현재 CLI는 schedule을 추가하거나 제거하지 않는다.
+생성된 caller에는 매시 17분 복구 확인 schedule이 포함된다. 대기 작업이 없으면 새 분석을 시작하지 않는다.
+한도 초과는 대기 상태로 기록되고, 재개 시각 이후 현재 입력으로 자동 재시도한다. 일반 실패 횟수와 분리되며,
+반복 한도 초과는 최대 20회 또는 14일로 제한된다. 인증·결제 오류는 자동 복구 대상이 아니다.
+새 작업의 정기 실행은 별도 cron으로 추가한다. 자세한 운영·기존 caller 전환·중지 방법은
+[quota recovery](quota-recovery.md)를 따른다. CLI는 로컬 파일만 만들며 원격 schedule을 직접 활성화하지 않는다.
 
 기술적 제약은 [security](security.md), [scan](scan.md), [triage](triage.md)에 있다.
 시간·비용·정확성의 pilot 결과는 brief의 표에 실제 값으로 남긴다. 빈 후보 결과를 억지로 채우지 않는다.

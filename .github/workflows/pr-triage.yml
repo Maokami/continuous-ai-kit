@@ -21,6 +21,12 @@ on:
         description: Branch whose scheduled or dispatched runs may publish
         type: string
         required: true
+      recovery_only:
+        type: boolean
+        default: false
+      reset_quota:
+        type: boolean
+        default: false
     secrets:
       claude_oauth_token:
         required: true
@@ -38,11 +44,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      issues: read
+      issues: write # Deterministic quota reset only; no model in this job.
       checks: read
       statuses: read
       actions: read
     outputs:
+      run: ${{ steps.quota.outputs.run }}
       facts_changed: ${{ steps.collect.outputs.facts_changed }}
       label_drift: ${{ steps.collect.outputs.label_drift }}
       pr_count: ${{ steps.collect.outputs.pr_count }}
@@ -68,7 +75,21 @@ jobs:
           set -euo pipefail
           [[ "$CAI_TOOL_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git -C .continuous-ai-kit rev-parse HEAD)" = "$CAI_TOOL_SHA"
+      - name: Reset quota recovery
+        if: github.event_name == 'workflow_dispatch' && inputs.reset_quota
+        env:
+          CAI_TOOL_SHA: ${{ job.workflow_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I ./.continuous-ai-kit/recovery_cli.py reset --config "$CAI_CONFIG"
+      - name: Check quota recovery
+        id: quota
+        env:
+          CAI_TOOL_SHA: ${{ job.workflow_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RECOVERY_ONLY: ${{ inputs.recovery_only && 'true' || 'false' }}
+        run: python3 -I ./.continuous-ai-kit/recovery_cli.py check --config "$CAI_CONFIG"
       - name: Collect facts
+        if: steps.quota.outputs.run == 'true'
         id: collect
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,6 +99,7 @@ jobs:
           python3 -I ./.continuous-ai-kit/cai/triage.py collect --repo "$GITHUB_REPOSITORY" \
             --config "$CAI_CONFIG" --out .continuous-ai/triage/snapshot.json --github-output "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.quota.outputs.run == 'true'
         with:
           name: cai-triage-snapshot-${{ github.run_attempt }}
           path: .continuous-ai/triage/snapshot.json
@@ -86,6 +108,9 @@ jobs:
           retention-days: 30
 
   summarize:
+    outputs:
+      failure_category: ${{ steps.diagnose.outputs.category }}
+      reset_at: ${{ steps.diagnose.outputs.reset_at }}
     needs: collect
     if: needs.collect.outputs.facts_changed == 'true' && needs.collect.outputs.pr_count != '0'
     runs-on: ubuntu-latest
@@ -115,8 +140,13 @@ jobs:
         with:
           name: cai-triage-snapshot-${{ github.run_attempt }}
           path: .continuous-ai/triage/
+      - name: Check OAuth input without disclosing it
+        env:
+          CAI_OAUTH_TOKEN: ${{ secrets.claude_oauth_token }}
+        run: python3 -I ./.continuous-ai-kit/cai/diagnostics.py check-token
       - name: Triage
         id: triage
+        continue-on-error: true
         timeout-minutes: 10
         uses: anthropics/claude-code-action@c0949c50a78c1ec8ce2647db36629b870e715d0c # v1
         with:
@@ -142,7 +172,12 @@ jobs:
             --setting-sources user
             --disable-slash-commands
             --json-schema '{"type":"object","properties":{"digest":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"number":{"type":"integer"},"priority":{"type":"string","enum":["높음","보통","낮음"]},"next_action":{"type":"string"}},"required":["number","priority","next_action"]}}},"required":["digest","items"]}'
+      - name: Classify analysis failure without raw output
+        id: diagnose
+        if: always() && steps.triage.outcome == 'failure'
+        run: python3 -I ./.continuous-ai-kit/cai/diagnostics.py failure
       - name: Verify triage output
+        if: success() && steps.triage.outcome == 'success'
         env:
           OUT: ${{ steps.triage.outputs.structured_output }}
           REVIEW_GITHUB_TOKEN: ${{ github.token }}
@@ -158,17 +193,22 @@ jobs:
           python3 -I ./.continuous-ai-kit/cai/triage.py validate \
             --snapshot .continuous-ai/triage/snapshot.json --ai .continuous-ai/triage/ai.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: success() && steps.triage.outcome == 'success'
         with:
           name: cai-triage-ai-${{ github.run_attempt }}
           path: .continuous-ai/triage/ai.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Fail non-quota analysis errors
+        if: always() && steps.triage.outcome == 'failure' && steps.diagnose.outputs.category != 'usage_limit'
+        run: exit 1
 
   publish:
     needs: [collect, summarize]
     if: >-
-      always() && needs.collect.result == 'success' &&
+      always() && needs.collect.result == 'success' && needs.collect.outputs.run == 'true' &&
+      needs.summarize.outputs.failure_category != 'usage_limit' &&
       (needs.collect.outputs.facts_changed == 'true' || needs.collect.outputs.label_drift == 'true') &&
       (needs.summarize.result == 'success' || needs.summarize.result == 'skipped')
     runs-on: ubuntu-latest
@@ -230,3 +270,43 @@ jobs:
             exit 0
           fi
           exit "$rc"
+
+  record-quota:
+    needs: [collect, summarize, publish]
+    if: >-
+      always() && needs.collect.result == 'success' && needs.collect.outputs.run == 'true' &&
+      (needs.summarize.result == 'success' || needs.summarize.result == 'failure' ||
+       (needs.summarize.result == 'skipped' &&
+        (needs.collect.outputs.pr_count == '0' || needs.collect.outputs.facts_changed == 'false')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      CAI_CONFIG: ${{ inputs.config }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .continuous-ai-kit
+          persist-credentials: false
+      - name: Verify package revision
+        env:
+          CAI_TOOL_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CAI_TOOL_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -C .continuous-ai-kit rev-parse HEAD)" = "$CAI_TOOL_SHA"
+      - name: Record quota outcome
+        env:
+          CAI_TOOL_SHA: ${{ job.workflow_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CAI_FAILURE_CATEGORY: ${{ needs.summarize.outputs.failure_category }}
+          CAI_RESET_AT: ${{ needs.summarize.outputs.reset_at }}
+        run: python3 -I ./.continuous-ai-kit/recovery_cli.py record --config "$CAI_CONFIG"

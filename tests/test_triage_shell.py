@@ -80,21 +80,22 @@ class Structure(unittest.TestCase):
 
     def test_job_permissions_and_secret_scope(self):
         js = jobs()
-        self.assertEqual(set(js), {"collect", "summarize", "publish"})
+        self.assertEqual(set(js), {"collect", "summarize", "publish", "record-quota"})
         def permissions(block):
             lines = block.split("    permissions:\n", 1)[1].splitlines()
             entries = []
             for line in lines:
                 if not line.startswith("      ") or line.startswith("       "):
                     break
-                entries.append(line.strip().split(": ", 1))
+                entries.append(line.split(" #", 1)[0].strip().split(": ", 1))
             return dict(entries)
         perms = {name: permissions(block) for name, block in js.items()}
-        self.assertEqual(perms["collect"], {"contents": "read", "pull-requests": "read", "issues": "read",
+        self.assertEqual(perms["collect"], {"contents": "read", "pull-requests": "read", "issues": "write",
                                             "checks": "read", "statuses": "read", "actions": "read"})
         self.assertEqual(perms["summarize"], {"contents": "read"})
         self.assertEqual(perms["publish"], {"contents": "read", "pull-requests": "write", "issues": "write",
                                             "checks": "read", "statuses": "read", "actions": "read"})
+        self.assertEqual(perms["record-quota"], {"contents": "read", "issues": "write"})
         self.assertNotIn("id-token", TEXT)
         self.assertEqual([n for n, b in js.items() if "secrets." in b], ["summarize"])
 
@@ -126,10 +127,11 @@ class Structure(unittest.TestCase):
         for match in re.finditer(r"(?m)^(\s*)run: \|\n((?:\1  .*\n|\n)*)", TEXT):
             self.assertNotIn("${{", match.group(2))
 
-    def test_publish_condition_matches_original(self):
+    def test_publish_condition_preserves_original_with_quota_gate(self):
         cond = jobs()["publish"].split("if: >-\n", 1)[1].split("\n    runs-on", 1)[0]
         self.assertEqual(" ".join(cond.split()),
-                         "always() && needs.collect.result == 'success' && "
+                         "always() && needs.collect.result == 'success' && needs.collect.outputs.run == 'true' && "
+                         "needs.summarize.outputs.failure_category != 'usage_limit' && "
                          "(needs.collect.outputs.facts_changed == 'true' || "
                          "needs.collect.outputs.label_drift == 'true') && "
                          "(needs.summarize.result == 'success' || needs.summarize.result == 'skipped')")
