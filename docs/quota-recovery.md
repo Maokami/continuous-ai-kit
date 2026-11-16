@@ -43,9 +43,14 @@ An updated source/package/config is collected into a new plan after cooldown; ol
 replayed. The existing exact-source validation and report-ID reconciliation still govern publishing.
 
 Triage uses a separate bot-owned `[Continuous AI] <marker_id> quota recovery` issue, created only on
-the first quota failure. It re-collects current PR facts when due. If the report already matches or
+the first quota failure with a dedicated `cai-quota-<hash>` label. Lookup is limited to that label,
+so unrelated issue/PR history does not affect recovery; 100 matching issues fails closed. Keep the
+identity label on the state issue. Label creation is deterministic and never changes existing labels. It re-collects current PR facts when due. If the report already matches or
 there are no open PRs, it clears the wait without calling Claude. Otherwise it validates the new AI
 output and re-collects before publishing as before. This extra state issue is not the report issue.
+A quota wait pauses the triage lane, including label-only updates, until a due trigger collects again.
+Once recovery state exists, outcome writes also track the last run ID to reject stale outcome records;
+the published PR report still retains its original unchanged-facts no-op behavior.
 The deterministic collect job has `issues: write` for an explicit manual reset; inference remains
 read-only and only the inference job receives the OAuth secret.
 
@@ -96,3 +101,13 @@ failure budgets, changed source, successful/no-op completion, stale run IDs and 
 state. Workflow condition tests cover deferred publish suppression and deterministic state recording.
 These tests do not establish that a real subscription reset and GitHub-scheduled retry succeeded.
 Record the actual source/runtime SHAs and run links for that end-to-end pilot separately.
+
+### Local verification — 2026-11-16
+
+- 147 unittest cases passed, including the quota cycles and a large-repository lookup regression.
+- Repository workflows and all five generated caller variants passed actionlint.
+- The official agy CLI performed an independent supplied-source review. Its large-repository triage
+  regression was reproduced, fixed with label-scoped lookup, and re-reviewed with no blockers.
+  The reviewer did not execute tests; the local test results above were run separately.
+- A read-only GitHub REST check confirmed that a nonexistent quota label returns an empty issue list.
+- No real subscription-reset or scheduled recovery run is included in this evidence.

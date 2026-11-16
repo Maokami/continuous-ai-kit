@@ -82,19 +82,19 @@ def emit(outputs):
             stream.write("Quota recovery: `" + json.dumps(outputs, sort_keys=True) + "`\n")
 
 
+def triage_label(marker_id):
+    return "cai-quota-" + hashlib.sha256(marker_id.encode()).hexdigest()[:16]
+
+
 def triage_state(api, marker_id):
     marker = "<!-- cai-quota:triage-" + marker_id + ":v1 -->"
     title = "[Continuous AI] " + marker_id + " quota recovery"
-    matches = []
-    for page in range(1, 11):
-        issues = api.request(f"/repos/{api.repo}/issues?state=all&per_page=100&page={page}")
-        matches.extend(i for i in issues if "pull_request" not in i
-                       and i.get("user", {}).get("login") == "github-actions[bot]"
-                       and i.get("title") == title and (i.get("body") or "").startswith(marker + "\n"))
-        if len(issues) < 100:
-            break
-    else:
-        raise ValueError("Quota issue history exceeds limit")
+    issues = api.request(f"/repos/{api.repo}/issues?state=all&labels={triage_label(marker_id)}&per_page=100")
+    if len(issues) >= 100:
+        raise ValueError("Quota label issue history exceeds limit")
+    matches = [i for i in issues if "pull_request" not in i
+               and i.get("user", {}).get("login") == "github-actions[bot]"
+               and i.get("title") == title and (i.get("body") or "").startswith(marker + "\n")]
     if len(matches) > 1:
         raise ValueError("Duplicate quota recovery issues")
     state = json.loads(matches[0]["body"].split("\n", 1)[1]) if matches else {}
@@ -109,11 +109,15 @@ def triage_update(api, marker_id, operation, *, category="", reset_at=None):
         return gate(state, recovery_only=os.environ.get("RECOVERY_ONLY") == "true", run_id=run_id)
     new = {} if operation == "reset" else record(
         state, category, run_id, reset_at=reset_at, scope=api.repo + marker_id)
-    # Keep successful/no-op triage runs free of extra issue writes.
+    # Create state only on quota failure; thereafter preserve outcome ordering across runs.
     if new != state and (number is not None or category == "usage_limit"):
         body = marker + "\n" + json.dumps(new, indent=2)
         if number is None:
-            api.request(f"/repos/{api.repo}/issues", {"title": title, "body": body})
+            label = triage_label(marker_id)
+            if api.request(f"/repos/{api.repo}/labels/{label}", missing_ok=True) is None:
+                api.request(f"/repos/{api.repo}/labels", {
+                    "name": label, "color": "e4e669", "description": "Continuous AI quota recovery state"})
+            api.request(f"/repos/{api.repo}/issues", {"title": title, "body": body, "labels": [label]})
         else:
             api.request(f"/repos/{api.repo}/issues/{number}", {"body": body}, "PATCH")
     return {"recovery_status": new.get("status", "ready")}

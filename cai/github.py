@@ -15,7 +15,7 @@ class GitHub:
             raise ValueError("Invalid repository")
         self.token = os.environ["GITHUB_TOKEN"]
 
-    def request(self, path, data=None, method=None):
+    def request(self, path, data=None, method=None, *, missing_ok=False):
         if not path.startswith(f"/repos/{self.repo}/"):
             raise ValueError("Only the consumer repository is accessible")
         method = method or ("GET" if data is None else "POST")
@@ -33,6 +33,8 @@ class GitHub:
                     raise ValueError("GitHub response exceeds the size limit")
                 return json.loads(raw) if raw else None
             except (HTTPError, URLError) as error:
+                if method == "GET" and missing_ok and isinstance(error, HTTPError) and error.code == 404:
+                    return None
                 retryable = not isinstance(error, HTTPError) or error.code in (429, 500, 502, 503, 504)
                 if method != "GET" or not retryable or attempt == 2:
                     raise RuntimeError(f"GitHub {method} failed; reconcile before retrying") from None

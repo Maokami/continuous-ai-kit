@@ -186,9 +186,27 @@ class ScanRecoveryTests(unittest.TestCase):
             self.assertNotIn("quota", saved)
 
 
+class TriageAPI(API):
+    def __init__(self):
+        super().__init__()
+        self.labels = {}
+
+    def request(self, path, data=None, method=None, *, missing_ok=False):
+        if "/labels/" in path:
+            return self.labels.get(path.rsplit("/", 1)[1])
+        if path.endswith("/labels") and data:
+            self.labels[data["name"]] = data
+            self.writes.append((path, data, method))
+            return data
+        if data is None and "/issues?" in path:
+            label = path.split("labels=", 1)[1].split("&", 1)[0]
+            return [i for i in self.issues if label in i.get("labels", [])]
+        return super().request(path, data, method)
+
+
 class TriageRecoveryTests(unittest.TestCase):
     def setUp(self):
-        self.api = API()
+        self.api = TriageAPI()
         self.env = patch.dict(os.environ, {"GITHUB_RUN_ID": "123", "RECOVERY_ONLY": "false"})
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -238,6 +256,36 @@ class TriageRecoveryTests(unittest.TestCase):
         self.assertEqual(R.triage_state(self.api, "other")[1], {})
         self.update("reset")
         self.assertEqual(R.triage_state(self.api, "triage")[1], {})
+
+    def test_large_repository_uses_only_label_scoped_history(self):
+        class LargeAPI(TriageAPI):
+            def request(self, path, data=None, method=None, *, missing_ok=False):
+                if data is None and "/issues?" in path:
+                    if "labels=cai-quota-" in path:
+                        return []
+                    return [{"pull_request": {}, "number": i} for i in range(100)]
+                return super().request(path, data, method, missing_ok=missing_ok)
+        self.assertEqual(R.triage_update(LargeAPI(), "triage", "check")["run"], "true")
+
+    def test_label_is_created_once_and_reused_without_touching_existing_label(self):
+        label = R.triage_label("triage")
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                self.api = TriageAPI()
+                if existing:
+                    self.api.labels[label] = {"name": label, "color": "abcdef"}
+                with patch.object(R.time, "time", return_value=NOW):
+                    self.update("record", category="usage_limit")
+                self.assertEqual(self.api.issues[0]["labels"], [label])
+                with patch.dict(os.environ, {"GITHUB_RUN_ID": "124"}), \
+                        patch.object(R.time, "time", return_value=NOW + 86400):
+                    self.update("record", category="usage_limit")
+                self.assertEqual(len(self.api.issues), 1)
+                self.assertEqual(len([w for w in self.api.writes if w[0].endswith("/labels")]),
+                                 0 if existing else 1)
+                self.assertEqual(self.api.writes[-1][2], "PATCH")
+                if existing:
+                    self.assertEqual(self.api.labels[label]["color"], "abcdef")
 
 
 def job_condition(path, job):

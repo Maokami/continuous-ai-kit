@@ -11,7 +11,7 @@ condition matter more than running frequently.
 | Lane | Reads | AI result | Deterministic writes |
 | --- | --- | --- | --- |
 | Source scan | Pinned tracked source and policy | At most three cited improvement candidates | Deduplicated report issues and a state issue |
-| PR triage | Current PR/CI/review facts | Priority and next action | Managed labels, one report issue and quota recovery state |
+| PR triage | Current PR/CI/review facts | Priority and next action | Managed labels, one report issue and labeled quota recovery state |
 
 This alpha does not edit source, open PRs, approve reviews, merge, or delete branches.
 Repository-specific PR review and merge automation remains in each consumer.
