@@ -45,7 +45,11 @@ def tracked_bytes(path):
 
 
 def load(path):
-    obj = json.loads(tracked_bytes(path))
+    return validate(json.loads(tracked_bytes(path)))
+
+
+def validate(obj):
+    """Validate a configuration before installation as well as at runtime."""
     required = {"version", "lane", "source_globs", "prompt_file"}
     allowed = set(DEFAULTS) | {"source_globs", "prompt_file"}
     if not isinstance(obj, dict) or not required <= obj.keys() or obj.keys() - allowed:

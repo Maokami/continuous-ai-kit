@@ -12,6 +12,11 @@ installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
 class InstallTests(unittest.TestCase):
+    def test_legacy_python_api_accepts_tuple_globs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = installer.install(Path(directory), "a" * 40, "docs", ("docs/*.md",), "text")
+            self.assertEqual(len(paths), 3)
+
     def test_isolated_cli_and_no_overwrite(self):
         with tempfile.TemporaryDirectory() as directory:
             command = [sys.executable, "-I", str(ROOT / "install.py"), directory,
