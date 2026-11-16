@@ -14,7 +14,7 @@ reviewed, tested improvement is a separate outcome.
 | Inputs | README, CLI/installer, runtime/schema, selected current docs, prompts/skill, regression tests, two reusable workflows; exact paths in the lane JSON |
 | Policy | `AGENTS.md`; distinct from source coverage |
 | Initial scope | 28 tracked files, 198,145 bytes, 7 batches at onboarding commit `04c8c2e`; counts change with source |
-| Runtime pin | `3b92523aa657b35f64130c2eed4a5446a1b52423`; deliberately independent of the source revision being inspected |
+| Runtime pin | `f93294f67f03b267f81d1dade76aa7a40ab1260a` (reviewed diagnostics commit in PR #8); deliberately independent of the source revision being inspected |
 | Model bounds | `claude-sonnet-5-5`, 32 turns, analysis step 10 minutes, 4 required source files per dispatch, at most 3 candidates |
 | Writes | One state issue and deduplicated candidate reports; no source edits, PRs, approvals, merges, or branch deletion |
 | Validation | Exact source SHA, package/policy/source digest, declared `reviewed_files` coverage (not proof of reading), literal anchors/quotes, schema, fresh remote head before publication |
