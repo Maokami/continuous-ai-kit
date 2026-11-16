@@ -64,18 +64,47 @@ Do not increase issue count to satisfy the target. Do not infer saved human time
 | Local scaffolding | Shared CLI generated and preflighted the lane | Pilot prepared | Local tests and workflow lint; no inference claimed | Not a model run |
 | [Kit CI 43808743961](https://github.com/Maokami/continuous-ai-kit/actions/runs/43808743961), source `b8d5afda6e9b0fafd925b4cd546d86f1f2bece7a` | 108 tests and workflow lint passed on the PR head | Infrastructure checks only | Includes five generated caller variants | Not a model run |
 | Local pinned-runtime preparation, same source; runtime `3b92523aa657b35f64130c2eed4a5446a1b52423` | Config, policy, source and batch `2` accepted by the exact pinned package | Input compatibility checked | Fake GitHub API; zero network calls or remote writes. Required files: `cai/triage.py`, `cli.py`, `docs/onboarding.md`, `docs/scan.md` | Not a model run |
-| [First live pilot 43809707993](https://github.com/Maokami/continuous-ai-kit/actions/runs/43809707993), source `d7c3d07ee96108dd44d32aad0125132c4b1cdd97`; runtime `3b92523aa657b35f64130c2eed4a5446a1b52423`; batch `2` | Preparation passed; Claude returned `is_error=true` without structured output. Validation/publication skipped; failure recording passed | No candidates to evaluate | [State #7](https://github.com/Maokami/continuous-ai-kit/issues/7) records attempt 1 as error; no retry dispatched | SDK reported 1 turn, 224 ms, $0 API-equivalent estimate and empty model usage; no successful analysis claimed |
+| [First live pilot 43809707993](https://github.com/Maokami/continuous-ai-kit/actions/runs/43809707993), source `d7c3d07ee96108dd44d32aad0125132c4b1cdd97`; runtime `3b92523aa657b35f64130c2eed4a5446a1b52423`; batch `2` | Preparation passed; Claude returned `is_error=true` without structured output. Validation/publication skipped; failure recording passed | No candidates to evaluate | [State #7](https://github.com/Maokami/continuous-ai-kit/issues/7) recorded attempt 1 as error at the time; no retry was dispatched for that digest | SDK reported 1 turn, 224 ms, $0 API-equivalent estimate and empty model usage; no successful analysis claimed |
+| [Instrumented pilot 43811425527](https://github.com/Maokami/continuous-ai-kit/actions/runs/43811425527), source `f7464936574d23e26593e5fd7189b07c94a09d57`; runtime `b0a29dce5a3a65a158fe3c2ec2c74fc661e16241`; batch `2` | Preparation and token shape check passed; analysis failed; diagnostics emitted `usage_limit`; validation/publication skipped; failure recording passed | No candidates; schedule kept disabled | State #7 records attempt 1 for the new runtime/source digest, with no published candidate IDs | SDK reported 1 turn, 322 ms, $0 API-equivalent estimate and empty model usage |
 
 A read-only `agy` advisory review of the self-maintenance patch and pinned workflow/scanner found
 no blocking issue. Its authentication-before-dispatch and successful-pilot-before-no-op clarifications
 are incorporated above. This was a supplied-source review, not an independent execution or an
 OAuth test. The Claude advisory route was unavailable due to the subscription's five-hour limit.
 
-The OAuth secret was registered on 2026-11-16. The first live pilot failed before producing a result;
-successful authentication/analysis, a successful-result no-op check, and schedule activation remain
-pending. The original log hid the provider error text, so token format, authentication/usage limits,
-and upstream failures could not be distinguished. The scan now adds fixed-category diagnostics
-without exposing the raw SDK record. This is an observability improvement, not yet a root-cause fix.
+The OAuth secret was registered on 2026-11-16. The first pilot could not distinguish the provider
+error. [PR #8](https://github.com/Maokami/continuous-ai-kit/pull/8) added fixed-category diagnostics
+and token input checks ([115-test CI](https://github.com/Maokami/continuous-ai-kit/actions/runs/43811030474)
+and independent supplied-source review); [PR #9](https://github.com/Maokami/continuous-ai-kit/pull/9)
+pinned that released runtime. Its live diagnostic step worked and classified the next failure as
+`usage_limit`. Token shape passed; this alone is not authentication proof. No successful analysis,
+candidate publication, or successful-result no-op test has occurred yet.
+
+`CAI_SELF_MAINTENANCE_ENABLED` is confirmed `false` after the two operational failures.
+No further scan inference or automatic retry was scheduled. The diagnostic improvement came from running
+the Kit on itself and inspecting its failure; it is not an AI-generated maintenance candidate and
+does not satisfy the accepted-finding target.
+
+## Resume after usage is available
+
+Confirm the subscription can serve the configured model, then use the existing explicit retry:
+
+```sh
+gh workflow run continuous-ai-kit-maintenance.yml \
+  --repo Maokami/continuous-ai-kit --ref main -f batch=2 -f retry_failed=true
+```
+
+At the checkpoint above, digest `2168a5cfd4cb28540037ed024d8e87b33340ec3d0e5f769053318d99024539f0`
+has `attempts=1`, `status=error`. One retry remains under the [bounded retry policy](scan.md).
+Check current source/policy/runtime
+and state first; do not clear the ledger or change inputs to evade the limit. The instrumented run
+used a new digest because diagnostics and source actually changed, not an explicit retry of the old run.
+Its required files were `cai/scan.py`, `cai/triage.py`, `cli.py`, and `docs/onboarding.md`.
+
+After a successful analysis/publication, dispatch the same batch with `retry_failed=false` and verify
+that analysis/publication skip and state/report body and timestamps remain unchanged. Evaluate the
+actual findings before setting `CAI_SELF_MAINTENANCE_ENABLED=true`. Keep it false until those checks pass.
+
 The repository originally had no `CLAUDE_CODE_OAUTH_TOKEN` secret.
 Follow the official [Claude Code GitHub Actions setup](https://code.claude.com/docs/en/github-actions)
 and keep the token value in Actions secrets, never in this record.
