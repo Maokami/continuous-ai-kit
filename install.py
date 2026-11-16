@@ -8,27 +8,33 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cai.config import path_name
+from cai.config import validate
+
+PROFILES = ("general", "docs", "core", "lean")
 
 
-def install(root, revision, lane, globs, adapter, branch="main"):
+def identity(revision, lane, branch):
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("Pin the package with a full commit SHA")
     if not re.fullmatch(r"[a-z][a-z0-9-]{0,39}", lane):
         raise ValueError("Invalid lane")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", branch):
         raise ValueError("Invalid default branch")
-    if adapter not in {"lean", "text"} or not globs or len(globs) > 20:
-        raise ValueError("Invalid source selection")
-    for pattern in globs:
-        path_name(pattern, glob=True)
-    root = root.resolve(strict=True)
+
+
+def render_scan(revision, lane, globs, adapter, branch="main", *, profile="general",
+                policies=(), model="claude-sonnet-5-5", batch_size=4, max_turns=32):
+    identity(revision, lane, branch)
+    if profile not in PROFILES or (profile == "lean" and adapter != "lean"):
+        raise ValueError("Invalid profile/adapter combination")
     config_path = f".github/continuous-ai/{lane}.json"
     prompt_path = f".github/continuous-ai/{lane}.md"
     workflow_path = f".github/workflows/continuous-ai-{lane}.yml"
     configuration = {"version": 1, "lane": lane, "default_branch": branch,
-                     "source_globs": globs, "prompt_file": prompt_path, "adapter": adapter,
-                     "model": "claude-sonnet-5-5", "batch_size": 4, "max_turns": 32}
+                     "source_globs": list(globs), "prompt_file": prompt_path, "adapter": adapter,
+                     "model": model, "batch_size": batch_size, "max_turns": max_turns,
+                     "policy_files": list(policies)}
+    validate(configuration)
     # No expression or caller-supplied shell fragment is interpolated into run steps.
     workflow = f'''name: Continuous AI ({lane})
 on:
@@ -68,24 +74,55 @@ Look for an existing solution before proposing new abstractions. Empty candidate
 Do not change files or create PRs. Self-reported file coverage is not proof of reading.
 In reviewed_files, list only sources selected by source_globs, including every evidence.path.
 Exclude policy, prompt, and plan files even when you read them. Check this before returning JSON.
+Each candidate.path must be in this batch's required_files. Supporting evidence may use other
+selected source files if listed in reviewed_files. If required context is outside the selection,
+state that limit in summary and omit findings you cannot ground in the provided sources.
 Use `manual` risk unless a Lean proof-only change preserves every public statement and assumption.
 For Lean, name a theorem, lemma, def, abbrev, structure, or inductive declaration, not an instance.
 For a text scan, `declaration` must be an exact source anchor (a heading, function name, or phrase).
+Copy that anchor character for character from a single source line; do not invent a qualified name.
+No two candidates may share the same path, declaration and kind. Merge related findings or use
+distinct literal anchors. Do not evade deduplication by varying kind for the same finding.
 Do not claim that compilation, tests, or human review happened unless provided as evidence.
 '''
+    if policies:
+        prompt += "\nRead these policy inputs, excluding them from reviewed_files:\n"
+        prompt += "".join(f"- {p}\n" for p in policies)
+    if profile != "general":
+        prompt += "\n" + (Path(__file__).parent / "templates" / "prompts" /
+                          (profile + ".md")).read_text(encoding="utf-8")
     files = {config_path: json.dumps(configuration, indent=2) + "\n",
              prompt_path: prompt, workflow_path: workflow}
+    return files
+
+
+def check_destinations(root, files):
+    root = root.resolve(strict=True)
     for path in files:
         current = root / path
         if any(p.is_symlink() for p in (current, *current.parents)):
             raise ValueError("Symlink destinations are forbidden")
+        if any(p.exists() and not p.is_dir() for p in current.parents):
+            raise ValueError("Destination parents must be directories")
     if any((root / p).exists() for p in files):
         raise ValueError("Refusing to overwrite an existing installation")
+
+
+def write_files(root, files):
+    """Refuse all known destination conflicts before creating any file."""
+    root = root.resolve(strict=True)
+    check_destinations(root, files)
     for path, data in files.items():
         destination = root / path
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(data)
+        with destination.open("x", encoding="utf-8") as stream:
+            stream.write(data)
     return list(files)
+
+
+def install(root, revision, lane, globs, adapter, branch="main"):
+    # Keep the original public installer API and CLI working.
+    return write_files(root, render_scan(revision, lane, globs, adapter, branch))
 
 
 if __name__ == "__main__":
