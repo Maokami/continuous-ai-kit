@@ -14,7 +14,7 @@ reviewed, tested improvement is a separate outcome.
 | Inputs | README, CLI/installer, runtime/schema, selected current docs, prompts/skill, regression tests, two reusable workflows; exact paths in the lane JSON |
 | Policy | `AGENTS.md`; distinct from source coverage |
 | Initial scope | 28 tracked files, 198,145 bytes, 7 batches at onboarding commit `04c8c2e`; counts change with source |
-| Runtime pin | `1ba588c8600b0d4ad84ac156ba733811dbb281b4` (quota recovery runtime); deliberately independent of the source revision being inspected |
+| Runtime pin | `d5e38f65feb7dc61a29129d1ae5ee3c990308b55` (quota recovery runtime); deliberately independent of the source revision being inspected |
 | Model bounds | `claude-sonnet-5-5`, 32 turns, analysis step 10 minutes, 4 required source files per dispatch, at most 3 candidates |
 | Writes | One state issue and deduplicated candidate reports; no source edits, PRs, approvals, merges, or branch deletion |
 | Validation | Exact source SHA, package/policy/source digest, declared `reviewed_files` coverage (not proof of reading), literal anchors/quotes, schema, fresh remote head before publication |
@@ -121,3 +121,15 @@ The two pilot failures above remain historical evidence from the old runtime; th
 are not silently reclassified. After the reviewed runtime/caller are deployed, start a normal manual
 pilot. If it hits a limit, subsequent recovery checks should resume automatically without waiting on
 a runner. Record that live sequence before claiming end-to-end subscription recovery has passed.
+
+## Startup failure correction — 2026-11-17
+
+Scheduled recovery runs [44046565194](https://github.com/Maokami/continuous-ai-kit/actions/runs/44046565194)
+and [44055057493](https://github.com/Maokami/continuous-ai-kit/actions/runs/44055057493) failed before
+creating jobs. The workflow-file annotation reported `workflow was not found` for the pre-squash
+feature SHA `1ba588c8600b0d4ad84ac156ba733811dbb281b4`, although the contents API could read that file.
+The self-caller now pins the published squash commit `d5e38f65feb7dc61a29129d1ae5ee3c990308b55`.
+CI checks that this pin belongs to published main history, with a regression fixture distinguishing
+feature and squash SHAs. The prior unit tests/actionlint did not exercise GitHub workflow resolution.
+This ancestry guard does not itself exercise GitHub workflow resolution; verify a live dispatch too.
+Pin future self-maintenance upgrades to the published post-merge SHA in a subsequent caller update.
