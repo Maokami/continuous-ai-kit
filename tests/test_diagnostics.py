@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("diagnostics", ROOT / "cai/diagnostics.py")
@@ -29,7 +30,8 @@ class DiagnosticsTests(unittest.TestCase):
                                 ("429 rate_limit_error", "usage_limit"),
                                 ("API Error: 401", "authentication_error"),
                                 ("HTTP 429", "usage_limit"),
-                                ("Credit balance is too low", "usage_limit"),
+                                ("invalid_api_key while checking quota", "authentication_error"),
+                                ("Credit balance is too low", "billing_error"),
                                 ("model_not_found", "model_unavailable")):
             result = D.classify([{"type": "result", "is_error": True, "result": error}])
             self.assertEqual(result["category"], expected)
@@ -66,6 +68,39 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), {"category": "usage_limit"})
             self.assertNotIn(secret, result.stdout + result.stderr)
             self.assertNotIn("::error::", result.stdout + result.stderr)
+
+    def test_structured_rate_limit_reset_and_credit_rejection(self):
+        now = 1_800_000_000
+        event = {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": now + 7200}}
+        with patch.object(D.time, "time", return_value=now):
+            self.assertEqual(D.classify([event]), {"category": "usage_limit", "reset_at": now + 7200})
+            self.assertEqual(D.classify([event, {"type": "result", "subtype": "success", "is_error": False,
+                                                "structured_output": {"ok": True}}]),
+                             {"category": "upstream_action_failure"})
+            for reset in (True, "tomorrow", now - 1, 10**50, now + 14 * 86400):
+                event["rate_limit_info"]["resetsAt"] = reset
+                self.assertEqual(D.classify([event]), {"category": "usage_limit"})
+            event["rate_limit_info"]["errorCode"] = "credits_required"
+            self.assertEqual(D.classify([event]), {"category": "billing_error"})
+
+    def test_warning_or_nested_events_do_not_authorize_quota_retry(self):
+        for status in ("allowed", "allowed_warning"):
+            self.assertEqual(D.classify([{"type": "rate_limit_event", "rate_limit_info": {"status": status}}]),
+                             D.UNAVAILABLE)
+        nested = {"type": "tool_result", "content": {"type": "rate_limit_event",
+                  "rate_limit_info": {"status": "rejected"}}}
+        self.assertEqual(D.classify([nested]), D.UNAVAILABLE)
+
+    def test_cli_exports_only_sanitized_job_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp, "outputs")
+            Path(tmp, "claude-execution-output.json").write_text(json.dumps([
+                {"type": "result", "is_error": True, "result": "usage limit\nrun=true\nsecret=hidden"}]))
+            result = subprocess.run([sys.executable, "-I", str(ROOT / "cai/diagnostics.py"), "failure"],
+                                    env=dict(os.environ, RUNNER_TEMP=tmp, GITHUB_OUTPUT=str(output)),
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(), "category=usage_limit\n")
 
     def test_unavailable_malformed_oversized_and_symlink_records(self):
         with tempfile.TemporaryDirectory() as tmp:

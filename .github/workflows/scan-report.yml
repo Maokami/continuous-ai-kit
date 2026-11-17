@@ -15,6 +15,12 @@ on:
       retry_failed:
         type: boolean
         default: false
+      recovery_only:
+        type: boolean
+        default: false
+      reset_quota:
+        type: boolean
+        default: false
     secrets:
       claude_oauth_token:
         required: true
@@ -61,6 +67,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REVIEW_BATCH: ${{ inputs.batch || 'auto' }}
           RETRY_FAILED: ${{ inputs.retry_failed && 'true' || 'false' }}
+          RECOVERY_ONLY: ${{ inputs.recovery_only && 'true' || 'false' }}
+          RESET_QUOTA: ${{ github.event_name == 'workflow_dispatch' && inputs.reset_quota && 'true' || 'false' }}
         run: python3 -I ./.continuous-ai-kit/cli.py prepare --config "$CAI_CONFIG"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.plan.outputs.run == 'true'
@@ -72,6 +80,9 @@ jobs:
           retention-days: 30
 
   scan:
+    outputs:
+      failure_category: ${{ steps.diagnose.outputs.category }}
+      reset_at: ${{ steps.diagnose.outputs.reset_at }}
     needs: prepare
     if: needs.prepare.outputs.run == 'true'
     runs-on: ubuntu-latest
@@ -103,6 +114,7 @@ jobs:
         run: python3 -I ./.continuous-ai-kit/cai/diagnostics.py check-token
       - name: Read-only analysis
         id: claude
+        continue-on-error: true
         timeout-minutes: 10
         uses: anthropics/claude-code-action@c0949c50a78c1ec8ce2647db36629b870e715d0c # v1
         with:
@@ -128,9 +140,11 @@ jobs:
             --disable-slash-commands
             --json-schema '${{ needs.prepare.outputs.schema }}'
       - name: Classify analysis failure without raw output
-        if: failure() && steps.claude.outcome == 'failure'
+        id: diagnose
+        if: always() && steps.claude.outcome == 'failure'
         run: python3 -I ./.continuous-ai-kit/cai/diagnostics.py failure
       - name: Validate result
+        if: success() && steps.claude.outcome == 'success'
         env:
           CAI_TOOL_SHA: ${{ job.workflow_sha }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -139,6 +153,7 @@ jobs:
           REVIEW_CONCLUSION: ${{ steps.claude.outputs.conclusion }}
         run: python3 -I ./.continuous-ai-kit/cli.py validate --config "$CAI_CONFIG"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: success() && steps.claude.outcome == 'success'
         with:
           name: cai-review-${{ needs.prepare.outputs.lane }}-${{ github.run_attempt }}
           path: |
@@ -147,9 +162,13 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Fail non-quota analysis errors
+        if: always() && steps.claude.outcome == 'failure' && steps.diagnose.outputs.category != 'usage_limit'
+        run: exit 1
 
   publish:
     needs: [prepare, scan]
+    if: needs.scan.result == 'success' && needs.scan.outputs.failure_category != 'usage_limit'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -209,4 +228,6 @@ jobs:
         env:
           CAI_TOOL_SHA: ${{ job.workflow_sha }}
           GITHUB_TOKEN: ${{ github.token }}
+          CAI_FAILURE_CATEGORY: ${{ needs.scan.outputs.failure_category }}
+          CAI_RESET_AT: ${{ needs.scan.outputs.reset_at }}
         run: python3 -I ./.continuous-ai-kit/cli.py error --config "$CAI_CONFIG"

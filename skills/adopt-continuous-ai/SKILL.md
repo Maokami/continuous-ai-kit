@@ -34,7 +34,7 @@ request, report it in the answer. Remove inapplicable sections; do not invent mi
 
 Verify the default branch and, for triage, exact required check contexts from repository settings and
 recent CI. Ask only when these cannot be determined and are needed. Choose a reviewed full Kit SHA.
-It pins the public reusable runtime, which may differ from the local onboarding code revision.
+It pins the public reusable runtime. Use a revision supporting the generator's recovery_only/reset_quota inputs; older pins do not gain quota recovery automatically.
 
 ```sh
 python3 -I "$KIT/onboard.py" scan "$REPO" \
@@ -54,7 +54,8 @@ actual selection. Policy files must not overlap the source selection. Inputs mus
 HEAD; do not commit somebody else's work merely to make preflight pass.
 
 Review the preview and append `--write` when local scaffolding is in scope. It creates local files,
-refuses existing destinations, and does not install secrets, schedule, push, or dispatch. Customize the
+refuses existing destinations, and does not install secrets, push, or dispatch. Generated callers include
+an hourly recovery-only schedule; it activates only when the workflow reaches the default branch. Customize the
 generated prompt for the actual objective without changing its output contract. Keep source-only
 coverage, exact literal anchors/quotations, bounded candidates, and valid empty results.
 
@@ -65,7 +66,7 @@ acceptance checks; do not silently substitute a scan for a research planner or a
 ## Validate, pilot, and learn
 
 Validate generated JSON against the Kit config contract and lint the caller workflows. Use the
-consumer's normal review/CI process. Current default setup is manual dispatch. Continue through
+consumer's normal review/CI process. New work starts by manual dispatch; hourly checks resume only outstanding quota waits. Continue through
 remote setup and a pilot if already authorized; otherwise deliver the concrete local diff and identify
 the exact remaining remote step. Never ask again for permission already granted.
 
@@ -76,7 +77,9 @@ authentication requirements when setting it up. Do not silently switch to a paid
 Record package/source SHA, run URL, validation outcome, published result, and human disposition.
 A scan dispatch covers one batch, not the entire repo. Test unchanged behavior with the **same batch**
 and digest (auto may advance); triage should skip AI/publication on unchanged facts. Diagnose failures
-before an explicit retry; do not bypass validators for a persuasive result.
+before an explicit retry of ordinary failures; usage limits are deferred automatically within bounded
+attempt/time limits. Review the Kit's docs/quota-recovery.md for the policy and stop switch. Do not
+bypass validators for a persuasive result.
 
 Use the brief to measure actionable accepted findings, false positives/duplicates, reviewer time,
 operational failure, and cost/usage. Separate observed data from estimates and proposed targets.

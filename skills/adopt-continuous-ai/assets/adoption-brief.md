@@ -21,7 +21,7 @@ do not apply. This is a design/evaluation record, not an automatically enforced 
 - Allowed output and writes; explicitly identify whether source changes are permitted:
 - Validator and follow-up verification commands; what those checks do not establish:
 - State identity, duplicate suppression, stale-input behavior:
-- Retry behavior and who diagnoses repeated failures:
+- Retry behavior: automatic quota recovery, ordinary failures, exhaustion/reset owner:
 - Runtime bounds actually configured (batch/turn/time/output/open-task limits):
 - Operational budget/usage target and who monitors it (not automatic enforcement unless implemented):
 - Human acceptance decision; relation to implementation, merge, and publication:

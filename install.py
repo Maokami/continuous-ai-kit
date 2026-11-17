@@ -38,6 +38,9 @@ def render_scan(revision, lane, globs, adapter, branch="main", *, profile="gener
     # No expression or caller-supplied shell fragment is interpolated into run steps.
     workflow = f'''name: Continuous AI ({lane})
 on:
+  schedule:
+    # Recovery checks only; add a distinct cron for new maintenance work.
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       batch:
@@ -46,13 +49,19 @@ on:
       retry_failed:
         type: boolean
         default: false
+      reset_quota:
+        description: Reset an exhausted quota recovery budget
+        type: boolean
+        default: false
 permissions: {{}}
 concurrency:
   group: continuous-ai-{lane}
   cancel-in-progress: false
 jobs:
   scan:
-    if: github.ref == 'refs/heads/{branch}'
+    if: >-
+      github.ref == 'refs/heads/{branch}' &&
+      (github.event_name != 'schedule' || vars.CAI_QUOTA_RECOVERY_DISABLED != 'true')
     permissions:
       contents: read
       issues: write
@@ -62,6 +71,8 @@ jobs:
       default_branch: {json.dumps(branch)}
       batch: ${{{{ inputs.batch || 'auto' }}}}
       retry_failed: ${{{{ inputs.retry_failed || false }}}}
+      recovery_only: ${{{{ github.event_name == 'schedule' && github.event.schedule == '17 * * * *' }}}}
+      reset_quota: ${{{{ inputs.reset_quota || false }}}}
     secrets:
       claude_oauth_token: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
 '''

@@ -11,8 +11,8 @@ are rejected. Globs use Python fnmatch over tracked paths. Include policies in `
 explicitly instruct the model to read applicable policy files in the prompt.
 
 The digest includes the executing package SHA, schema, config, prompt, policies, and source bytes.
-Each digest is scanned once per batch. Automatic selection chooses the least recently visited batch.
-A failed batch has one explicit retry: dispatch its numeric `batch` with `retry_failed: true`.
+Each digest is scanned once per batch. Automatic selection prioritizes quota-deferred batches, then the least recently visited batch.
+An ordinary failed batch has one explicit retry: dispatch its numeric `batch` with `retry_failed: true`.
 Do not use GitHub's partial job rerun for retries. Artifacts include run_attempt; this preserves
 attempt evidence and intentionally prevents a partial rerun from reading an older attempt.
 Re-run all jobs is a new reservation and may select a different batch; use dispatch for intent.
@@ -40,14 +40,17 @@ This checks input shape, not authentication, model access, or available subscrip
 after reservation, so a failure still consumes an attempt.
 
 If Claude fails, `cai/diagnostics.py` reads the pinned Action's temporary execution record and emits
-only a fixed category: `authentication_error`, `usage_limit`, `model_unavailable`, `turn_limit`,
+a fixed category (and an optional bounded reset timestamp): `authentication_error`, `usage_limit`, `billing_error`, `model_unavailable`, `turn_limit`,
 `structured_output_missing`, `upstream_action_failure`, `unknown_analysis_error`, or
 `execution_record_unavailable`. These are troubleshooting hints based on the SDK result, not trusted
-authorization or semantic verdicts. They never make a failed run successful or authorize a retry.
+authorization or semantic verdicts. Only `usage_limit` enters the bounded [quota recovery loop](quota-recovery.md); that workflow
+completes as deferred without validating/publishing an AI result. Other failures stay failures.
 Result text can itself be model-influenced; a category is not proof about the account's status.
 
 Raw SDK messages, tool output, tokens, and error text are neither echoed nor uploaded by this helper.
 Malformed, missing, symlinked or oversized execution records produce `execution_record_unavailable`.
 The existing Action's full-output/report switches remain disabled. For token input errors, correct
-the Actions secret; for usage limits, verify reset/availability before using the one explicit retry.
+the Actions secret. Usage limits now persist a wait and resume automatically on the next eligible
+trigger, without spending the ordinary task retry. The diagnostic may also export a bounded numeric
+`reset_at` from an SDK rate-limit event; prose reset times are ignored.
 Do not change input digests merely to obtain additional attempts.

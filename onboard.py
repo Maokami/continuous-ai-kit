@@ -105,14 +105,24 @@ def render_triage(revision, lane, branch, checks):
               "report_title": cfg.report_title, "required_checks": list(cfg.required_checks)}
     workflow = f'''name: Continuous AI ({lane})
 on:
+  schedule:
+    # Recovery checks only; add a distinct cron for new maintenance work.
+    - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      reset_quota:
+        description: Reset an exhausted quota recovery budget
+        type: boolean
+        default: false
 permissions: {{}}
 concurrency:
   group: continuous-ai-{lane}
   cancel-in-progress: false
 jobs:
   triage:
-    if: github.ref == 'refs/heads/{branch}'
+    if: >-
+      github.ref == 'refs/heads/{branch}' &&
+      (github.event_name != 'schedule' || vars.CAI_QUOTA_RECOVERY_DISABLED != 'true')
     permissions:
       contents: read
       issues: write
@@ -124,6 +134,8 @@ jobs:
     with:
       config: {config_path}
       default_branch: {json.dumps(branch)}
+      recovery_only: ${{{{ github.event_name == 'schedule' && github.event.schedule == '17 * * * *' }}}}
+      reset_quota: ${{{{ inputs.reset_quota || false }}}}
     secrets:
       claude_oauth_token: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
 '''
@@ -178,7 +190,7 @@ def main(argv=None):
             result = {"mode": "written" if args.write else "preview", "scope": scope,
                       "files": files, "written": written,
                       "next": "Review the diff and adoption brief. Commit via normal repository workflow. "
-                              "No secret, remote setting, schedule, or workflow run was changed."}
+                              "No secret, remote setting, or workflow run was changed. Generated callers include recovery-only schedules."}
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
