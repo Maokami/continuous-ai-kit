@@ -1,6 +1,7 @@
 """A squash-merged runtime must use the published SHA rather than the PR SHA."""
 
 from pathlib import Path
+import os
 import subprocess
 import tempfile
 import unittest
@@ -12,8 +13,11 @@ class RuntimePinTests(unittest.TestCase):
     def test_squash_side_branch_pin_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+            env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
             def git(*args):
-                return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.PIPE).decode().strip()
+                return subprocess.check_output(["git", "-C", str(root), *args], env=env,
+                                               stderr=subprocess.PIPE).decode().strip()
             git("init", "-q", "-b", "main")
             git("config", "user.name", "Fixture")
             git("config", "user.email", "fixture@example.invalid")
@@ -42,5 +46,6 @@ class RuntimePinTests(unittest.TestCase):
             pin(main_sha)
             check(root)
             caller.write_text(caller.read_text().replace(main_sha, "main"))
+            caller.write_text(caller.read_text() + "# uses: Maokami/continuous-ai-kit/.github/workflows/scan-report.yml@" + main_sha + "\n")
             with self.assertRaisesRegex(ValueError, "full runtime SHA"):
                 check(root)

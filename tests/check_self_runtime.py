@@ -7,7 +7,7 @@ import subprocess
 
 def check(root, published="refs/remotes/origin/main"):
     workflow = root / ".github/workflows/continuous-ai-kit-maintenance.yml"
-    matches = re.findall(r"uses: Maokami/continuous-ai-kit/\.github/workflows/scan-report\.yml@([0-9a-f]{40})\s*$",
+    matches = re.findall(r"^\s*uses: Maokami/continuous-ai-kit/\.github/workflows/scan-report\.yml@([0-9a-f]{40})\s*$",
                          workflow.read_text(), re.MULTILINE)
     if len(matches) != 1:
         raise ValueError("Self-maintenance needs one full runtime SHA")

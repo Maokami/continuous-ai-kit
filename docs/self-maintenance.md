@@ -131,4 +131,5 @@ feature SHA `1ba588c8600b0d4ad84ac156ba733811dbb281b4`, although the contents AP
 The self-caller now pins the published squash commit `d5e38f65feb7dc61a29129d1ae5ee3c990308b55`.
 CI checks that this pin belongs to published main history, with a regression fixture distinguishing
 feature and squash SHAs. The prior unit tests/actionlint did not exercise GitHub workflow resolution.
+This ancestry guard does not itself exercise GitHub workflow resolution; verify a live dispatch too.
 Pin future self-maintenance upgrades to the published post-merge SHA in a subsequent caller update.
