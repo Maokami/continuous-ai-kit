@@ -134,15 +134,16 @@ feature and squash SHAs. The prior unit tests/actionlint did not exercise GitHub
 This ancestry guard does not itself exercise GitHub workflow resolution; verify a live dispatch too.
 Pin future self-maintenance upgrades to the published post-merge SHA in a subsequent caller update.
 
-## Successful deployment and activation — 2026-11-17
+## Deployment and activation record — 2026-11-17
 
 - [Fix PR #12](https://github.com/Maokami/continuous-ai-kit/pull/12) merged as
-  `2a066d65ac7065451656e374d65aa1bb1130f177`; its tree matches reviewed head
+  `2a066d65ac7065451656e374d65aa1bb1130f177`; its tree matches final PR head
   `605142a085e4dd3bb92917441faecf4f15907e84`. Final-head CI
   [44064748883](https://github.com/Maokami/continuous-ai-kit/actions/runs/44064748883) and main CI
   [44064892111](https://github.com/Maokami/continuous-ai-kit/actions/runs/44064892111) passed the
-  ancestry guard, 148 tests and workflow lint. Official Claude Code supplied-source review found no
-  blockers; the suggested fixture isolation and commented-pin checks were applied.
+  ancestry guard, 148 tests and workflow lint. The official Claude Code CLI reviewed the supplied initial fix and found no blockers; its suggested
+  fixture isolation and commented-pin checks were then applied in commit `605142a`. The final
+  commit passed CI; these small hardening changes were not given a second model review.
 - Recovery-only scheduled runs, including
   [44091981055](https://github.com/Maokami/continuous-ai-kit/actions/runs/44091981055) and
   [44102361525](https://github.com/Maokami/continuous-ai-kit/actions/runs/44102361525), created jobs
@@ -160,11 +161,17 @@ Pin future self-maintenance upgrades to the published post-merge SHA in a subseq
 - [Same-input check 44106549563](https://github.com/Maokami/continuous-ai-kit/actions/runs/44106549563)
   succeeded; analysis/publication skipped. Issue #7 and report #13 retained identical bodies and
   `updated_at` timestamps before/after; no new report appeared.
-- After those checks, `CAI_SELF_MAINTENANCE_ENABLED=true` was set and read back. New work is now
-  scheduled Monday/Thursday 09:37 KST; hourly quota-recovery checks remain enabled. The first new-work
+- After those checks, repository variable `CAI_SELF_MAINTENANCE_ENABLED=true` was set and read back.
+  New-work runs are now eligible Monday/Thursday 09:37 KST (`37 0 * * 1,4` UTC); hourly quota-recovery checks remain enabled. The first new-work
   scheduled analysis after activation is not part of this record. Review the first four evaluated runs
   using the existing criteria; the lane still does not implement fixes or merge PRs autonomously.
 
-This establishes live workflow startup, a successful model/validator/publisher path and a successful
-same-input no-op. It does not establish an actual quota exhaustion-to-reset-to-resumption sequence,
-which remains covered by clock-controlled tests rather than a live subscription-reset observation.
+This establishes job creation for scheduled recovery-only runs before activation and manual dispatch,
+one successful model/validator/publisher path, and one same-source/runtime/digest no-op. It does not
+establish a new-work scheduled analysis after activation or an actual subscription exhaustion-to-reset-
+to-resumption sequence. Clock-controlled tests exercise the modeled cooldown transitions; report #13's
+candidate still needs investigation. Activation keeps the existing serialized caller and read-only AI
+scope, with human review of any proposal. The runtime remains PR #11's published SHA intentionally:
+PR #12 changes only the self-caller pin, CI and documentation. To pause new work set
+`CAI_SELF_MAINTENANCE_ENABLED=false`; to pause scheduled recovery too, set
+`CAI_QUOTA_RECOVERY_DISABLED=true` or disable the workflow. Neither cancels an already running job.
