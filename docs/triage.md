@@ -13,14 +13,15 @@
 
 | 필드 | 기본값 (SW 설정) | 규칙 |
 | --- | --- | --- |
-| `label_namespace` | `pr-triage/` | 영숫자로 시작하고 `/`로 끝난다. 가장 긴 라벨 이름이 50자(GitHub 상한) 이하. 가장 긴 접미사가 `bot-review-pending`(18자)이므로 namespace는 32자까지다. |
+| `label_namespace` | `pr-triage/` | 영숫자로 시작하고 `/`로 끝난다. 가장 긴 라벨 이름이 50자(GitHub 상한) 이하. |
 | `report_title` | `PR 현황 보고서 (자동)` | 앞뒤 공백 없는 한 줄, 1–256자 |
 | `required_checks` | `("Lean build and audits",)` | 서로 다른 한 줄 이름이 하나 이상. ruleset의 필수 검사 이름과 맞춘다. |
 | `marker_id` | `pr-triage` | `[a-z0-9]`와 단일 `-`만. HTML 주석 안에 `--`가 생기지 않는다. |
-| `review_bots` | `()` (선택) | 현재 head commit을 리뷰해야 하는 봇의 REST login 목록(예: `chatgpt-codex-connector[bot]`). 서로 다르고 10개 이하. 비어 있으면 `bot-review-pending`을 붙이지 않는다. |
+| `review_bots` | `()` (선택) | 현재 head commit을 리뷰해야 하는 봇의 REST login 목록(예: `chatgpt-codex-connector[bot]`). 서로 다르고 10개 이하. 비어 있으면 `needs-bot-review`를 붙이지 않는다. |
+| `review_state_markers` | `()` (선택) | 봇이 자기 PR 코멘트에 남기는 리뷰 상태 표식 중 읽을 것. 현재 고를 수 있는 값은 `codex-review-state:v1` 하나다. `review_bots`와 함께만 쓴다. |
 
 파생 이름:
-- 관리 라벨: `namespace + {ready, needs-review, changes-requested, unresolved-review, bot-review-pending,
+- 관리 라벨: `namespace + {ready, needs-review, changes-requested, unresolved-review, needs-bot-review,
   ci-failing, ci-pending, conflict, blocked, draft, unknown}`
 - 보고서 라벨: `namespace + report`
 - 보고서 마커: `<!-- {marker_id}-report:v1 -->`
@@ -29,7 +30,7 @@
 라벨 색과 설명, 보고서 본문 문구(한국어)는 v0에서 고정이다.
 
 **버전 있는 JSON 설정** (`TriageConfig.from_mapping`): 모르는 키, 다른 `version`, 배열이 아닌
-`required_checks`·`review_bots`는 거부한다. 빠진 키는 기본값이다. `review_bots`가 비어 있으면 `as_dict()`에서
+`required_checks`·`review_bots`·`review_state_markers`는 거부한다. 빠진 키는 기본값이다. `review_bots`가 비어 있으면 `as_dict()`에서
 빠지므로 기존 설정의 `config_id`는 그대로다.
 
 ```json
@@ -61,17 +62,38 @@ PR 번호뿐이고, owner·저장소 이름·PR 번호·cursor는 GraphQL 변수
 | `unresolved_bot` | 그중 첫 코멘트 작성자가 GitHub App 봇(`__typename == "Bot"`)인 수 |
 | `threads` | 미해결 스레드 처음 10개의 `{path, author, bot}`. 경로는 200자에서 자른다. 코멘트 본문은 읽지 않는다. 수는 `unresolved`가 정확히 센다. |
 | `threads_complete` | 스레드가 500개를 넘거나 응답이 형식에 맞지 않으면 `false` |
-| `head_reviewed` | `review_bots`의 login마다 `true`(그 봇의 review `commit.oid`가 head), `false`(받은 review 전체에 없음), `null`(판단 불가) |
+| `head_reviewed` | `review_bots`의 login마다 `true`(그 봇의 review `commit.oid`가 head이거나, 그 봇의 코멘트 속 표식이 head를 가리킴), `false`(받은 review와 코멘트 어디에도 없음), `null`(판단 불가) |
 
 - GraphQL은 봇 login에 `[bot]`을 붙이지 않는다. `_actor`가 REST 형식으로 맞춘 뒤 `review_bots`와 대소문자 구분
   없이 비교한다. 같은 이름의 사람 계정은 봇으로 치지 않는다.
 - `head_reviewed`가 `null`인 경우: head를 모름, PR 목록 이후 head가 바뀜, review가 100개를 넘어 앞부분을 못 받았는데
   최근 100개에 없음, GitHub가 PR 객체를 주지 않음.
-- 판정 근거는 review의 `commit.oid`뿐이다. 이슈 코멘트, 반응(👍), 봇 본문 안의 표식은 쓰지 않는다.
+- 판정 근거는 review의 `commit.oid`와, `review_state_markers`를 켠 경우 봇 코멘트의 리뷰 상태 표식이다.
+  반응(👍)과 코멘트의 다른 부분은 쓰지 않는다.
+
+### 리뷰 상태 표식 (opt-in)
+
+Codex는 지적할 것이 없으면 review를 남기지 않는다. 대신 PR에 요약 이슈 코멘트를 하나 두고, 그 첫머리의 기계 판독용
+표식을 갱신한다(2026-11-18 consumer PR에서 확인한 형식):
+
+```
+<!-- codex-pull-request-review-summary -->
+<!-- codex-review-state:v1 {"code_review":{"commit_sha":"<40 hex>","has_any_findings":false,"has_unresolved_findings":null,"status":"completed"},"security_review":{...}} -->
+```
+
+`review_state_markers: ["codex-review-state:v1"]`이면 다음을 모두 만족할 때 그 봇이 head를 리뷰한 것으로 본다.
+- 코멘트 작성자가 `review_bots`의 봇이다(GraphQL `__typename == "Bot"`). 사람이나 다른 봇이 같은 표식을 써도 무시한다.
+- 본문 첫 4,096자 안에 `<!-- codex-review-state:v1 {JSON} -->`이 한 줄로 있고, JSON이 2,000자 이하이며 파싱된다.
+- `code_review.status == "completed"`이고 `code_review.commit_sha`가 PR 목록의 head SHA와 글자 그대로 같다.
+
+이 밖의 경우(표식 없음, 깨진 JSON, 길이 초과, 다른 commit, 진행 중)는 "리뷰 안 함"이다. 코멘트는 PR마다 최근
+50개만 읽고, 이 질의는 `review_state_markers`가 있을 때만 보낸다. 본문은 수집 단계 안에서만 쓰고 스냅샷·모델 입력·
+보고서에는 표식 판정 결과(`head_reviewed`)만 남는다. 표식 이름마다 JSON 안 어느 절을 읽을지는
+`REVIEW_STATE_MARKERS`에 코드로 고정되어 있어, 설정으로 임의의 표식을 추가할 수 없다.
 
 라벨:
 - `unresolved-review`: `unresolved > 0`
-- `bot-review-pending`: `head_reviewed`에 `false`가 하나라도 있음
+- `needs-bot-review`: `head_reviewed`에 `false`가 하나라도 있음
 - `unknown`: `threads_complete == false` 또는 `head_reviewed`에 `null`이 있음
 - 위 두 라벨 중 하나라도 있으면 다른 사실이 모두 좋아도 `ready`나 `blocked`를 붙이지 않는다.
 
@@ -94,8 +116,9 @@ digest·라벨·보고서가 원본과 같다. 실제 `GH` 래퍼는 항상 `rev
 `pull-requests: write`로 충분하다. job 권한과 caller 권한은 바뀌지 않는다.
 
 **알려진 한계:**
-- 봇이 지적할 것이 없을 때 review를 남기지 않으면(예: Codex는 👍 반응과 요약 이슈 코멘트만 남긴다)
-  `bot-review-pending`이 계속 붙는다. 사람이 봇의 요약을 보고 판단한다.
+- 봇이 지적할 것이 없을 때 review를 남기지 않고, 알려진 표식도 쓰지 않으면 `needs-bot-review`가 계속 붙는다.
+  Codex는 `review_state_markers`로 처리한다. 다른 봇은 표식 형식을 확인해 `REVIEW_STATE_MARKERS`에 추가해야 한다.
+- 표식 형식이 바뀌면(예: `v2`) 판정은 "리뷰 안 함"으로 떨어진다. 라벨이 다시 늘면 형식을 확인한다.
 - 스레드의 `isOutdated`는 쓰지 않는다. 낡은 줄에 달린 대화도 해결 처리 전까지 미해결이다.
 - 미해결 대화 판정은 끌 수 없다. `review_bots`와 상관없이 미해결 대화가 있으면 `ready`가 빠진다.
 - review는 최근 100개만 본다. review가 100개를 넘고 그 안에 봇의 head review가 없으면 `false`가 아니라 `null`이다.
@@ -103,11 +126,10 @@ digest·라벨·보고서가 원본과 같다. 실제 `GH` 래퍼는 항상 `rev
   `GITHUB_TOKEN`의 시간당 GraphQL 한도를 다른 호출과 나눠 쓴다. 하루 몇 번 도는 일정에서는 문제가 없다.
 
 **업그레이드 시 바뀌는 것 (2026-11-18):**
-- 관리 라벨이 2개 늘었다. 가장 긴 접미사가 18자라서 `label_namespace`는 32자까지다(이전 33자).
-  33자 namespace를 쓰던 consumer는 올리면 설정 오류로 멈춘다. `onboard.py triage --lane`도 31자까지다.
+- 관리 라벨이 2개 늘었다. 둘 다 17자 이하라 `label_namespace` 상한(33자)은 그대로다.
 - 실제 `GH`로 모은 사실에는 `review`가 들어가므로 digest가 원본 스크립트와 달라진다. 올린 뒤 첫 실행에서 보고서를
   한 번 다시 쓰고 모델을 한 번 부른다.
-- 원본 스크립트로 되돌리면 `unresolved-review`, `bot-review-pending` 라벨은 원본이 관리하지 않으므로 PR에 남는다.
+- 원본 스크립트로 되돌리면 `unresolved-review`, `needs-bot-review` 라벨은 원본이 관리하지 않으므로 PR에 남는다.
   사람이 지운다.
 
 ## API

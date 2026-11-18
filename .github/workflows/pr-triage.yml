@@ -9,8 +9,8 @@
 # OAuth secret, and serialize runs with a concurrency group per repository and label namespace.
 # collect and publish request actions: read because `gh pr list --json statusCheckRollup` resolves
 # checkSuite.workflowRun, which a private consumer cannot read without it. Callers must grant it too.
-# Review threads and reviews are read with a GraphQL query covered by the existing pull-requests and
-# contents read permissions (a review's commit is repository content).
+# Review threads, reviews, and (with review_state_markers) PR comments are read with GraphQL queries covered by
+# the existing pull-requests and contents read permissions (a review's commit is repository content).
 name: PR triage report
 
 on:

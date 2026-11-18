@@ -124,9 +124,9 @@ class Labels(unittest.TestCase):
         self.assertEqual(labels(raw_pr(data([thread(False)], [review(HEAD)]))), {"unresolved-review"})
 
     def test_bot_not_on_head_blocks_ready(self):
-        self.assertEqual(labels(raw_pr(data([], [review(OLD)]))), {"bot-review-pending"})
+        self.assertEqual(labels(raw_pr(data([], [review(OLD)]))), {"needs-bot-review"})
         self.assertEqual(labels(raw_pr(data([thread(False)], [review(OLD)]))),
-                         {"unresolved-review", "bot-review-pending"})
+                         {"unresolved-review", "needs-bot-review"})
 
     def test_unknown_review_facts(self):
         self.assertEqual(labels(raw_pr(data(reviews=[review(OLD)], review_total=150))), {"unknown"})
@@ -136,12 +136,12 @@ class Labels(unittest.TestCase):
 
     def test_review_labels_join_other_labels(self):
         raw = dict(raw_pr(data([thread(False)], [review(OLD)])), reviewDecision="REVIEW_REQUIRED", isDraft=True)
-        self.assertEqual(labels(raw), {"draft", "needs-review", "unresolved-review", "bot-review-pending"})
+        self.assertEqual(labels(raw), {"draft", "needs-review", "unresolved-review", "needs-bot-review"})
 
     def test_labels_follow_namespace(self):
         cfg = T.TriageConfig(label_namespace="kt/", required_checks=("CI",), review_bots=(CODEX,))
         pr = T.normalize_pr(raw_pr(data([thread(False)], [review(OLD)])), cfg)
-        self.assertEqual(T.classify(pr, cfg), {"kt/unresolved-review", "kt/bot-review-pending"})
+        self.assertEqual(T.classify(pr, cfg), {"kt/unresolved-review", "kt/needs-bot-review"})
         self.assertIn("kt/unresolved-review", cfg.pr_labels)
 
 
@@ -209,7 +209,7 @@ class Publishing(unittest.TestCase):
         gh = FakeGH([raw_pr(data([thread(False, "src/a.rs")], [review(OLD)]))], BOTS)
         snap = T.collect(gh, BOTS)
         self.assertEqual(T.publish(gh, snap, ai_for(snap), "run", "now", BOTS), "published")
-        self.assertIn(("add", 7, ("pr-triage/bot-review-pending", "pr-triage/unresolved-review")), gh.mutations)
+        self.assertIn(("add", 7, ("pr-triage/needs-bot-review", "pr-triage/unresolved-review")), gh.mutations)
         self.assertIn(("create_label", "pr-triage/unresolved-review"), gh.mutations)
         body = gh.issues[0]["body"]
         self.assertIn("| 미해결 대화 | 봇 head 리뷰 |", body)
@@ -227,7 +227,7 @@ class Publishing(unittest.TestCase):
         self.assertEqual(T.publish(gh, later, ai_for(later), "run", "now", BOTS), "published")
         self.assertIn(("add", 7, ("pr-triage/ready",)), gh.mutations)
         self.assertIn(("remove", 7, "pr-triage/unresolved-review"), gh.mutations)
-        self.assertIn(("remove", 7, "pr-triage/bot-review-pending"), gh.mutations)
+        self.assertIn(("remove", 7, "pr-triage/needs-bot-review"), gh.mutations)
         self.assertNotIn("### 미해결 리뷰 대화", gh.issues[0]["body"])
         self.assertIn(f"| 0 | {CODEX} 완료 |", gh.issues[0]["body"])
 
@@ -444,6 +444,120 @@ class ReviewFixes(unittest.TestCase):
 
     def test_ready_description_is_unchanged(self):
         self.assertEqual(T.LABEL_SPECS["ready"][1], "Draft 아님, 충돌 없음, CI 통과, 리뷰 승인, 병합 가능 모두 확인됨")
+
+
+
+MARKER = "codex-review-state:v1"
+MARKED = T.TriageConfig(required_checks=("CI",), review_bots=(CODEX,), review_state_markers=(MARKER,))
+
+
+def summary(commit, status="completed", findings=False, marker=MARKER):
+    """The bot's summary comment as observed on a consumer PR (2026-11-18), with its review-state marker."""
+    state = {"code_review": {"commit_sha": commit, "has_any_findings": findings,
+                             "has_unresolved_findings": None if not findings else True, "status": status},
+             "security_review": {"commit_sha": None, "has_any_findings": None, "has_unresolved_findings": None,
+                                 "status": None}}
+    return ("<!-- codex-pull-request-review-summary -->\n"
+            f"<!-- {marker} {json.dumps(state, separators=(',', ':'))} -->\n\n"
+            "<details>\n<summary><strong>Codex Review Summary</strong></summary>\n</details>\n")
+
+
+def comment(body, author=None):
+    return {"author": author if author is not None else bot("chatgpt-codex-connector"), "body": body}
+
+
+def with_comments(d, comments, total=None):
+    d["comments"] = {"totalCount": len(comments) if total is None else total, "nodes": comments}
+    return d
+
+
+class ReviewStateMarkers(unittest.TestCase):
+    """Opt-in markers count only in a configured bot's own comment, and only for a completed head review."""
+
+    def state(self, comments, cfg=MARKED, reviews=()):
+        return T.review_facts(with_comments(data(reviews=list(reviews)), comments), HEAD, cfg)["head_reviewed"]
+
+    def test_marker_on_head_counts_as_review(self):
+        self.assertEqual(self.state([comment(summary(HEAD))]), {CODEX: True})
+        self.assertEqual(labels(raw_pr(with_comments(data(), [comment(summary(HEAD))])), MARKED), {"ready"})
+
+    def test_marker_on_older_commit_or_unfinished_is_pending(self):
+        for body in (summary(OLD), summary(HEAD, status="in_progress"), summary(HEAD, status=None)):
+            with self.subTest(body=body[60:140]):
+                self.assertEqual(self.state([comment(body)]), {CODEX: False})
+        self.assertEqual(labels(raw_pr(with_comments(data(), [comment(summary(OLD))])), MARKED),
+                         {"needs-bot-review"})
+
+    def test_other_authors_are_ignored(self):
+        for author in (user("Maokami"), user("chatgpt-codex-connector"), bot("another-reviewer"), None):
+            with self.subTest(author=author):
+                c = comment(summary(HEAD), author if author is not None else {})
+                if author is None:
+                    c["author"] = None  # deleted account
+                self.assertEqual(self.state([c]), {CODEX: False})
+
+    def test_malformed_markers_fail_closed(self):
+        good = summary(HEAD)
+        bodies = [
+            good.replace('"code_review":{', '"code_review":{,'),            # broken JSON
+            good.replace(MARKER, "codex-review-state:v2"),                 # other marker version
+            "x" * T.MARKER_SCAN_CHARS + good,                              # beyond the scanned start
+            good.replace('"status":"completed"', '"status":"completed","pad":"' + "p" * T.MARKER_JSON_MAX + '"'),
+            good.replace('"code_review"', '"other_review"'),               # wrong section
+            good.replace(HEAD, HEAD.upper()),                              # not the exact head SHA
+            None,
+        ]
+        for body in bodies:
+            with self.subTest(body=str(body)[:40]):
+                self.assertEqual(self.state([comment(body)]), {CODEX: False})
+
+    def test_markers_ignored_unless_configured(self):
+        self.assertEqual(self.state([comment(summary(HEAD))], cfg=BOTS), {CODEX: False})
+
+    def test_review_still_counts_with_markers(self):
+        self.assertEqual(self.state([], reviews=[review(HEAD)]), {CODEX: True})
+
+    def test_marker_needs_same_head(self):
+        d = with_comments(data(head=OLD), [comment(summary(HEAD))])
+        self.assertEqual(T.review_facts(d, HEAD, MARKED)["head_reviewed"], {CODEX: None})
+
+    def test_comment_bodies_do_not_reach_the_snapshot(self):
+        gh = FakeGH([raw_pr(with_comments(data(), [comment(summary(HEAD) + "SECRET-LOOKING TEXT")]))], MARKED)
+        snap = T.collect(gh, MARKED)
+        self.assertNotIn("SECRET-LOOKING", json.dumps(snap))
+        self.assertNotIn("codex-review-state", json.dumps(snap))
+
+    def test_config(self):
+        self.assertEqual(T.TriageConfig.from_mapping(MARKED.as_dict()), MARKED)
+        self.assertNotIn("review_state_markers", BOTS.as_dict())
+        self.assertNotEqual(MARKED.config_id(), BOTS.config_id())
+        for kwargs in (dict(review_bots=(CODEX,), review_state_markers=("unknown:v1",)),
+                       dict(review_bots=(CODEX,), review_state_markers=(MARKER, MARKER)),
+                       dict(review_bots=(CODEX,), review_state_markers=[MARKER]),
+                       dict(review_state_markers=(MARKER,))):          # markers without bots
+            with self.assertRaises(T.ConfigError, msg=kwargs):
+                T.TriageConfig(**kwargs)
+        with self.assertRaises(T.ConfigError):
+            T.TriageConfig.from_mapping({"version": 1, "review_bots": [CODEX], "review_state_markers": MARKER})
+
+    def test_comment_query_only_when_configured(self):
+        seen = []
+
+        def runner(args, stdin):
+            if args[:2] == ["pr", "list"]:
+                return 0, json.dumps([{"number": 7}]), ""
+            seen.append(args[3])
+            return 0, json.dumps({"data": {"repository": {"p7": data()}}}), ""
+        T.GH("o/r", runner=runner, cfg=BOTS).list_prs()
+        T.GH("o/r", runner=runner, cfg=MARKED).list_prs()
+        self.assertNotIn("comments(last:", seen[0])
+        self.assertIn(T.COMMENT_FIELDS, seen[1])
+        self.assertNotIn("mutation", T.COMMENT_FIELDS)
+
+    def test_cli_flag(self):
+        args = T.argparse.Namespace(config=None, label_namespace=None, report_title=None, required_checks=["CI"],
+                                    marker_id=None, review_bots=[CODEX], review_state_markers=[MARKER])
+        self.assertEqual(T.config_from_args(args), MARKED)
 
 
 if __name__ == "__main__":

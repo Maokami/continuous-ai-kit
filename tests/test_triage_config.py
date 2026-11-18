@@ -125,7 +125,7 @@ class DefaultIsOriginal(unittest.TestCase):
         self.assertEqual(set(T.LABELS), {"pr-triage/" + s for s in (
             "ready", "needs-review", "changes-requested", "ci-failing", "ci-pending", "conflict", "blocked",
             "draft", "unknown", "report",
-            "unresolved-review", "bot-review-pending")})  # review-thread labels added after the original
+            "unresolved-review", "needs-bot-review")})  # review-thread labels added after the original
         self.assertEqual(T.LABELS["pr-triage/ready"][0], "0e8a16")
         self.assertEqual(T.PR_LABELS, set(T.LABELS) - {"pr-triage/report"})
 
@@ -207,7 +207,7 @@ class ConfigGuards(unittest.TestCase):
     def test_invalid_configs(self):
         bad = [
             dict(label_namespace="pr-triage"), dict(label_namespace="/x/"), dict(label_namespace="a b/"),
-            dict(label_namespace="x" * 33 + "/"), dict(label_namespace="x" * 32 + "/"),
+            dict(label_namespace="x" * 33 + "/"),
             dict(report_title=""), dict(report_title=" t"), dict(report_title="a\nb"), dict(report_title="t" * 257),
             dict(required_checks=()), dict(required_checks=("a", "a")), dict(required_checks=["a"]),
             dict(required_checks=("a\nb",)), dict(required_checks=(" a",)),
@@ -218,7 +218,7 @@ class ConfigGuards(unittest.TestCase):
                 T.TriageConfig(**kwargs)
 
     def test_namespace_length_boundary(self):
-        T.TriageConfig(label_namespace="x" * 31 + "/")  # 32 + "bot-review-pending" 18 = 50
+        T.TriageConfig(label_namespace="x" * 32 + "/")  # 33 + "changes-requested" 17 = 50
 
     def test_from_mapping(self):
         cfg = T.TriageConfig.from_mapping({"version": 1, "label_namespace": "kt-triage/",

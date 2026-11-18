@@ -20,12 +20,14 @@ Subcommands:
 
 Review facts: the GitHub wrapper also reads each open PR's review threads and latest reviews over read-only
 GraphQL. Unresolved threads and configured review bots that have not reviewed the current head commit become
-facts and labels. Raw PRs without review data (inputs of the original script) keep the original behavior.
+facts and labels. A bot also counts as having reviewed the head when an opted-in review-state marker in its own
+PR comment names the head commit (bots that leave no review when they find nothing). Raw PRs without review data (inputs of the original script) keep the original behavior.
 
 Config arguments (collect and publish; use one form only):
   --config FILE                  {"version": 1, "label_namespace", "report_title", "required_checks", "marker_id",
-                                  "review_bots" (optional)}
+                                  "review_bots", "review_state_markers" (optional)}
   --label-namespace / --report-title / --required-check (repeatable) / --marker-id / --review-bot (repeatable)
+  / --review-state-marker (repeatable)
 
 Examples (read-only):
   python3 -I cai/triage.py collect --repo OWNER/REPO --out /tmp/snap.json
@@ -55,6 +57,12 @@ REVIEW_THREAD_PAGES = 5     # pages read per PR (500 threads, resolved ones incl
 REVIEW_LIMIT = 100          # latest reviews per PR searched for the head commit
 REVIEW_QUERY_CHUNK = 20     # PRs per GraphQL request
 REVIEW_BOTS_MAX = 10
+# Review-state markers a review bot writes into its own PR comment, as "<!-- NAME {json} -->". Only markers listed
+# here can be configured; the value names the JSON section holding "commit_sha" and "status".
+REVIEW_STATE_MARKERS: Dict[str, str] = {"codex-review-state:v1": "code_review"}
+MARKER_COMMENT_LIMIT = 50   # latest PR comments searched for markers (only when markers are configured)
+MARKER_SCAN_CHARS = 4096    # only the start of a comment is searched
+MARKER_JSON_MAX = 2000      # longer marker JSON is ignored
 REVIEW_PATH_MAX = 200       # characters of a thread path kept in the snapshot
 REVIEW_THREADS_KEPT = 10    # unresolved threads kept per PR (snapshot size bound); the count stays exact
 REPORT_THREAD_CHARS = 15000 # thread list budget; with the bounded table the body stays under GITHUB_BODY_MAX
@@ -69,6 +77,10 @@ REVIEW_FIELDS = (
     f"reviewThreads(first: {REVIEW_THREAD_LIMIT}) {{ totalCount pageInfo {{ hasNextPage endCursor }} "
     f"nodes {{ {THREAD_NODE} }} }} "
     f"reviews(last: {REVIEW_LIMIT}) {{ totalCount nodes {{ author {{ __typename login }} commit {{ oid }} }} }}")
+# Added to REVIEW_FIELDS only when review_state_markers are configured. Bodies stay in the collector: only the
+# parsed marker result reaches the snapshot.
+COMMENT_FIELDS = (f"comments(last: {MARKER_COMMENT_LIMIT}) {{ totalCount nodes {{ author {{ __typename login }} "
+                  "body } }")
 # Later thread pages of one PR; the cursor is a GraphQL variable.
 THREAD_PAGE_QUERY = (
     "query($owner: String!, $name: String!, $number: Int!, $cursor: String!) { "
@@ -82,7 +94,7 @@ LABEL_SPECS: Dict[str, Tuple[str, str]] = {
     "needs-review": ("fbca04", "리뷰 승인 대기"),
     "changes-requested": ("d93f0b", "리뷰가 변경을 요청함"),
     "unresolved-review": ("d93f0b", "해결되지 않은 리뷰 대화가 있음"),
-    "bot-review-pending": ("fbca04", "설정된 리뷰 봇이 현재 head commit 을 아직 리뷰하지 않음"),
+    "needs-bot-review": ("fbca04", "설정된 리뷰 봇이 현재 head commit 을 아직 리뷰하지 않음"),
     "ci-failing": ("b60205", "실패한 검사가 있음"),
     "ci-pending": ("c5def5", "진행 중인 검사가 있음"),
     "conflict": ("b60205", "base 와 충돌"),
@@ -107,6 +119,7 @@ class TriageConfig:
     required_checks: Tuple[str, ...] = ("Lean build and audits",)  # required check names of the ruleset
     marker_id: str = "pr-triage"
     review_bots: Tuple[str, ...] = ()  # REST logins such as "name[bot]" that must review the head commit
+    review_state_markers: Tuple[str, ...] = ()  # opt-in names from REVIEW_STATE_MARKERS
     _labels: Dict[str, Tuple[str, str]] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -129,6 +142,12 @@ class TriageConfig:
         if (not isinstance(bots, tuple) or len(bots) > REVIEW_BOTS_MAX or len(set(bots)) != len(bots)
                 or any(not isinstance(b, str) or not LOGIN_RE.fullmatch(b) for b in bots)):
             raise ConfigError(f"review_bots 는 서로 다른 GitHub login (예: name[bot]) {REVIEW_BOTS_MAX} 개 이하의 목록이어야 한다")
+        markers = self.review_state_markers
+        if (not isinstance(markers, tuple) or len(set(markers)) != len(markers)
+                or any(m not in REVIEW_STATE_MARKERS for m in markers)):
+            raise ConfigError(f"review_state_markers 는 {sorted(REVIEW_STATE_MARKERS)} 중에서 고른 서로 다른 이름이어야 한다")
+        if markers and not bots:
+            raise ConfigError("review_state_markers 는 review_bots 와 함께 쓴다 (설정된 봇의 코멘트만 읽는다)")
         object.__setattr__(self, "_labels", {self.label_namespace + suffix: spec
                                              for suffix, spec in LABEL_SPECS.items()})
 
@@ -169,6 +188,8 @@ class TriageConfig:
                "marker_id": self.marker_id}
         if self.review_bots:  # omitted when empty so existing configs keep their config_id
             out["review_bots"] = list(self.review_bots)
+        if self.review_state_markers:
+            out["review_state_markers"] = list(self.review_state_markers)
         return out
 
     def config_id(self) -> str:
@@ -180,14 +201,15 @@ class TriageConfig:
         """Load a versioned config object. Unknown keys and other versions are rejected; missing keys default."""
         if not isinstance(data, dict):
             raise ConfigError("설정은 JSON 객체여야 한다")
-        allowed = {"version", "label_namespace", "report_title", "required_checks", "marker_id", "review_bots"}
+        allowed = {"version", "label_namespace", "report_title", "required_checks", "marker_id", "review_bots",
+                   "review_state_markers"}
         unknown = set(data) - allowed
         if unknown:
             raise ConfigError(f"모르는 설정 키: {sorted(unknown)}")
         if data.get("version") != CONFIG_VERSION:
             raise ConfigError(f"설정 version 은 {CONFIG_VERSION} 이어야 한다")
         kwargs = {k: v for k, v in data.items() if k != "version"}
-        for key in ("required_checks", "review_bots"):
+        for key in ("required_checks", "review_bots", "review_state_markers"):
             if key in kwargs:
                 if not isinstance(kwargs[key], list):
                     raise ConfigError(f"{key} 는 배열이어야 한다")
@@ -284,12 +306,33 @@ def _nodes(data: object, key: str) -> Tuple[List[dict], bool]:
     return kept, len(kept) == len(nodes) and total <= len(kept)
 
 
+def marker_names_head(body: object, head_sha: str, markers: Tuple[str, ...]) -> bool:
+    """Whether a configured review-state marker near the start of body records a completed review of head_sha.
+    Anything else (no marker, oversized or malformed JSON, another commit, unfinished review) is False."""
+    if not isinstance(body, str):
+        return False
+    start = body[:MARKER_SCAN_CHARS]
+    for marker in markers:
+        pattern = r"<!-- " + re.escape(marker) + r" (\{[^\n]{0,%d}?\}) -->" % MARKER_JSON_MAX
+        for match in re.finditer(pattern, start):
+            try:
+                state = json.loads(match.group(1))
+            except ValueError:
+                continue
+            section = state.get(REVIEW_STATE_MARKERS[marker]) if isinstance(state, dict) else None
+            if (isinstance(section, dict) and section.get("status") == "completed"
+                    and section.get("commit_sha") == head_sha):
+                return True
+    return False
+
+
 def review_facts(data: object, head_sha: Optional[str], cfg: TriageConfig = DEFAULT) -> dict:
     """Unresolved review threads and, per configured review bot, whether it reviewed the head commit.
 
-    head_reviewed values: True (a review by the bot has commit == head), False (complete reviews show none),
+    head_reviewed values: True (a review by the bot has commit == head, or a configured review-state marker in
+    the bot's own PR comment names head), False (complete reviews and the fetched comments show none),
     None (cannot tell: head unknown or moved since the PR list, or older reviews were not fetched).
-    Thread bodies are never read; only the path and the first comment's author are kept."""
+    Thread and comment bodies never reach the result; only thread paths and first authors are kept."""
     threads, threads_complete = _nodes(data, "reviewThreads")
     unresolved = []
     for t in threads:
@@ -307,6 +350,13 @@ def review_facts(data: object, head_sha: Optional[str], cfg: TriageConfig = DEFA
     # GitHub logins are case-insensitive.
     on_head = {_actor(r.get("author"))[0].casefold() for r in reviews
                if isinstance(r.get("commit"), dict) and r["commit"].get("oid") == head_sha}
+    # Markers count only in comments written by a configured bot; anyone else's copy is ignored.
+    bots = {b.casefold() for b in cfg.review_bots}
+    if cfg.review_state_markers and same_head:
+        for c in _nodes(data, "comments")[0]:
+            login = _actor(c.get("author"))[0].casefold()
+            if login in bots and marker_names_head(c.get("body"), head_sha, cfg.review_state_markers):
+                on_head.add(login)
     head_reviewed: Dict[str, Optional[bool]] = {}
     for bot in cfg.review_bots:
         if not same_head:
@@ -371,7 +421,7 @@ def classify(pr: dict, cfg: TriageConfig = DEFAULT) -> Set[str]:
             unknown = True
         states = list(review["head_reviewed"].values())
         if False in states:
-            out.add(cfg.label("bot-review-pending"))
+            out.add(cfg.label("needs-bot-review"))
             review_gate = True
         if None in states:
             unknown = True
@@ -643,7 +693,8 @@ class GH:
         out: Dict[int, Optional[dict]] = {}
         for start in range(0, len(unique), REVIEW_QUERY_CHUNK):
             chunk = unique[start:start + REVIEW_QUERY_CHUNK]
-            fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ {REVIEW_FIELDS} }}" for n in chunk)
+            per_pr = REVIEW_FIELDS + (" " + COMMENT_FIELDS if self.cfg.review_state_markers else "")
+            fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ {per_pr} }}" for n in chunk)
             query = ("query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { "
                      + fields + " } }")
             repo = self._graphql(query, match, {})
@@ -808,18 +859,20 @@ def _add_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--required-check", action="append", dest="required_checks")
     parser.add_argument("--marker-id")
     parser.add_argument("--review-bot", action="append", dest="review_bots")
+    parser.add_argument("--review-state-marker", action="append", dest="review_state_markers")
 
 
 def config_from_args(args: argparse.Namespace) -> TriageConfig:
     flags = {k: getattr(args, k)
-             for k in ("label_namespace", "report_title", "required_checks", "marker_id", "review_bots")
+             for k in ("label_namespace", "report_title", "required_checks", "marker_id", "review_bots",
+                       "review_state_markers")
              if getattr(args, k) is not None}
     if args.config:
         if flags:
             raise ConfigError("--config 와 개별 설정 인자를 함께 쓸 수 없다")
         with open(args.config, encoding="utf-8") as f:
             return TriageConfig.from_mapping(json.load(f))
-    for key in ("required_checks", "review_bots"):
+    for key in ("required_checks", "review_bots", "review_state_markers"):
         if key in flags:
             flags[key] = tuple(flags[key])
     return TriageConfig(**flags)
