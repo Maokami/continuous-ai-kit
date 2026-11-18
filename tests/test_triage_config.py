@@ -124,7 +124,8 @@ class DefaultIsOriginal(unittest.TestCase):
         self.assertEqual(T.REQUIRED_CHECKS, ("Lean build and audits",))
         self.assertEqual(set(T.LABELS), {"pr-triage/" + s for s in (
             "ready", "needs-review", "changes-requested", "ci-failing", "ci-pending", "conflict", "blocked",
-            "draft", "unknown", "report")})
+            "draft", "unknown", "report",
+            "unresolved-review", "needs-bot-review")})  # review-thread labels added after the original
         self.assertEqual(T.LABELS["pr-triage/ready"][0], "0e8a16")
         self.assertEqual(T.PR_LABELS, set(T.LABELS) - {"pr-triage/report"})
 
