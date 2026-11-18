@@ -1,6 +1,7 @@
 # PR triage (`cai/triage.py`)
 
-열린 PR의 사실(head SHA, CI, Draft, 충돌, 리뷰 승인)을 결정적으로 모아 관리 라벨을 맞춘다. 사실이 바뀌었을 때만
+열린 PR의 사실(head SHA, CI, Draft, 충돌, 리뷰 승인, 미해결 리뷰 대화, 리뷰 봇의 head 리뷰 여부)을 결정적으로
+모아 관리 라벨을 맞춘다. 사실이 바뀌었을 때만
 모델이 제안한 우선순위·다음 조치를 검증해 봇 소유 보고서 이슈 하나에 게시한다. PR을 병합·종료하거나 브랜치를
 고치지 않는다.
 
@@ -12,14 +13,15 @@
 
 | 필드 | 기본값 (SW 설정) | 규칙 |
 | --- | --- | --- |
-| `label_namespace` | `pr-triage/` | 영숫자로 시작하고 `/`로 끝난다. 가장 긴 라벨 이름이 50자(GitHub 상한) 이하. |
+| `label_namespace` | `pr-triage/` | 영숫자로 시작하고 `/`로 끝난다. 가장 긴 라벨 이름이 50자(GitHub 상한) 이하. 가장 긴 접미사가 `bot-review-pending`(18자)이므로 namespace는 32자까지다. |
 | `report_title` | `PR 현황 보고서 (자동)` | 앞뒤 공백 없는 한 줄, 1–256자 |
 | `required_checks` | `("Lean build and audits",)` | 서로 다른 한 줄 이름이 하나 이상. ruleset의 필수 검사 이름과 맞춘다. |
 | `marker_id` | `pr-triage` | `[a-z0-9]`와 단일 `-`만. HTML 주석 안에 `--`가 생기지 않는다. |
+| `review_bots` | `()` (선택) | 현재 head commit을 리뷰해야 하는 봇의 REST login 목록(예: `chatgpt-codex-connector[bot]`). 서로 다르고 10개 이하. 비어 있으면 `bot-review-pending`을 붙이지 않는다. |
 
 파생 이름:
-- 관리 라벨: `namespace + {ready, needs-review, changes-requested, ci-failing, ci-pending, conflict,
-  blocked, draft, unknown}`
+- 관리 라벨: `namespace + {ready, needs-review, changes-requested, unresolved-review, bot-review-pending,
+  ci-failing, ci-pending, conflict, blocked, draft, unknown}`
 - 보고서 라벨: `namespace + report`
 - 보고서 마커: `<!-- {marker_id}-report:v1 -->`
 - digest 마커: `<!-- {marker_id}-digest: <64 hex> -->`
@@ -27,7 +29,8 @@
 라벨 색과 설명, 보고서 본문 문구(한국어)는 v0에서 고정이다.
 
 **버전 있는 JSON 설정** (`TriageConfig.from_mapping`): 모르는 키, 다른 `version`, 배열이 아닌
-`required_checks`는 거부한다. 빠진 키는 기본값이다.
+`required_checks`·`review_bots`는 거부한다. 빠진 키는 기본값이다. `review_bots`가 비어 있으면 `as_dict()`에서
+빠지므로 기존 설정의 `config_id`는 그대로다.
 
 ```json
 {"version": 1, "label_namespace": "pr-triage/", "report_title": "PR 현황 보고서 (자동)",
@@ -42,20 +45,68 @@
 
 그래서 다른 레인의 보고서를 고르지 않는다.
 
+## 리뷰 대화와 리뷰 봇 사실
+
+`GH.list_prs`는 `gh pr list` 다음에 읽기 전용 GraphQL 질의 하나로 PR 20개씩 `reviewThreads(first: 100)`와
+`reviews(last: 100)`를 읽어 각 PR에 `reviewData`로 붙인다. 질의에 들어가는 값은 검증한 PR 번호뿐이고,
+owner와 저장소 이름은 GraphQL 변수다. GraphQL 오류나 `repository` 누락은 `TriageError`(종료 1)다.
+
+`normalize_pr`가 PR 사실에 더하는 `review` 항목:
+
+| 키 | 뜻 |
+| --- | --- |
+| `unresolved` | `isResolved == false`인 스레드 수 |
+| `unresolved_bot` | 그중 첫 코멘트 작성자가 GitHub App 봇(`__typename == "Bot"`)인 수 |
+| `threads` | 미해결 스레드 처음 10개의 `{path, author, bot}`. 경로는 200자에서 자른다. 코멘트 본문은 읽지 않는다. 수는 `unresolved`가 정확히 센다. |
+| `threads_complete` | 스레드가 100개를 넘거나 응답이 형식에 맞지 않으면 `false` |
+| `head_reviewed` | `review_bots`의 login마다 `true`(그 봇의 review `commit.oid`가 head), `false`(받은 review 전체에 없음), `null`(판단 불가) |
+
+- GraphQL은 봇 login에 `[bot]`을 붙이지 않는다. `_actor`가 REST 형식으로 맞춘 뒤 `review_bots`와 비교한다.
+  같은 이름의 사람 계정은 봇으로 치지 않는다.
+- `head_reviewed`가 `null`인 경우: head를 모름, PR 목록 이후 head가 바뀜, review가 100개를 넘어 앞부분을 못 받았는데
+  최근 100개에 없음, GitHub가 PR 객체를 주지 않음.
+- 판정 근거는 review의 `commit.oid`뿐이다. 이슈 코멘트, 반응(👍), 봇 본문 안의 표식은 쓰지 않는다.
+
+라벨:
+- `unresolved-review`: `unresolved > 0`
+- `bot-review-pending`: `head_reviewed`에 `false`가 하나라도 있음
+- `unknown`: `threads_complete == false` 또는 `head_reviewed`에 `null`이 있음
+- 위 두 라벨 중 하나라도 있으면 다른 사실이 모두 좋아도 `ready`나 `blocked`를 붙이지 않는다.
+
+보고서에는 `미해결 대화`(예: `2 (봇 2)`)와 `봇 head 리뷰`(예: `name[bot] 대기`, 봇 설정이 없으면 `-`) 열이 붙고,
+미해결 스레드가 있으면 표 아래 `미해결 리뷰 대화` 절에 PR마다 경로와 첫 작성자를 10개까지 적는다. 경로와 login은
+제목과 같은 방식으로 한 줄로 만들고 표·HTML·멘션·digest 마커를 무력화한다.
+
+`review` 항목은 사실 digest에 들어간다. 스레드가 생기거나 해결되면 사실이 바뀐 것으로 보고 보고서를 다시 쓴다.
+게시 직전 다시 읽은 스레드가 다르면 stale(종료 3)이다.
+
+**원본과의 호환:** `reviewData` 키가 없는 raw PR(원본 스크립트의 입력, 원본 시험의 대역)에는 `review` 항목이 없고,
+digest·라벨·보고서가 원본과 같다. 실제 `GH` 래퍼는 항상 `reviewData`를 붙인다.
+
+**권한:** GraphQL 질의는 `reviewThreads`와 `reviews`만 읽으므로 collect의 `pull-requests: read`, publish의
+`pull-requests: write`로 충분하다. job 권한과 caller 권한은 바뀌지 않는다.
+
+**알려진 한계:**
+- 봇이 지적할 것이 없을 때 review를 남기지 않으면(예: Codex는 👍 반응과 요약 이슈 코멘트만 남긴다)
+  `bot-review-pending`이 계속 붙는다. 사람이 봇의 요약을 보고 판단한다.
+- 스레드의 `isOutdated`는 쓰지 않는다. 낡은 줄에 달린 대화도 해결 처리 전까지 미해결이다.
+
 ## API
 
 모든 함수는 마지막 인자 `cfg: TriageConfig = DEFAULT`를 받는다. 기본값으로 부르면 원본과 같다.
 
-- 분류: `check_state(check)`, `ci_state(checks, cfg)`, `normalize_pr(raw, cfg)`, `classify(pr, cfg)`,
-  `managed(labels, cfg)`, `plan_labels(pr, cfg)`
-- 사실 digest: `facts_digest(prs)`. 설정과 무관하다. 단, `ci` 값은 `required_checks`로 정해진다.
+- 분류: `check_state(check)`, `ci_state(checks, cfg)`, `review_facts(data, head_sha, cfg)`,
+  `normalize_pr(raw, cfg)`, `classify(pr, cfg)`, `managed(labels, cfg)`, `plan_labels(pr, cfg)`
+- 사실 digest: `facts_digest(prs)`. 설정과 무관하다. 단, `ci` 값은 `required_checks`로,
+  `review.head_reviewed`의 키는 `review_bots`로 정해진다.
 - 보고서: `find_report_issue(issues, cfg)`, `parse_digest(body, cfg)`, `render(snapshot, items, run_url, now, cfg)`
 - 모델 출력: `validate_ai(ai, snapshot)`. 우선순위 열거값 `높음/보통/낮음`은 고정이다.
 - 실행 단위:
   - `collect(gh, cfg) -> snapshot`
   - `publish(gh, snapshot, ai, run_url, now, cfg) -> "published" | "labels-only" | "already-published"`
     또는 `Stale`
-- GitHub 래퍼: `GH(repo, dry_run=False, runner=..., cfg=DEFAULT)`. `gh`의 인자 목록은 원본과 같다.
+- GitHub 래퍼: `GH(repo, dry_run=False, runner=..., cfg=DEFAULT)`. 원본에 있던 호출의 `gh` 인자 목록은 같고,
+  `review_data(numbers)`의 `gh api graphql` 호출이 더해졌다.
 
 스냅샷 키:
 - 원본과 같은 것: `version`, `repo`, `digest`, `prs`, `report_issue`, `facts_changed`, `label_drift`
@@ -85,6 +136,7 @@ python3 -I cai/triage.py collect  --repo O/R --out snap.json [--github-output F]
 python3 -I cai/triage.py validate --snapshot snap.json --ai ai.json
 python3 -I cai/triage.py publish  --repo O/R --snapshot snap.json [--ai ai.json] [--run-url U] [--dry-run] [설정]
 # 설정: --config triage.json  또는  --label-namespace NS/ --report-title T --required-check C ... --marker-id ID
+#       [--review-bot LOGIN ...]
 ```
 
 - 종료 코드:

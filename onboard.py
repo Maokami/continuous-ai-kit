@@ -96,8 +96,8 @@ def scan_scope(root, globs, policies, batch_size):
 
 def render_triage(revision, lane, branch, checks):
     install.identity(revision, lane, branch)
-    if len(lane) > 32 or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", lane):
-        raise ValueError("Triage --lane needs at most 32 lowercase letters/digits separated by single hyphens")
+    if len(lane) > 31 or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", lane):
+        raise ValueError("Triage --lane needs at most 31 lowercase letters/digits separated by single hyphens")
     cfg = TriageConfig(label_namespace=lane + "/", marker_id=lane,
                        report_title=f"PR status report ({lane})", required_checks=tuple(checks))
     config_path = f".github/continuous-ai/{lane}.json"

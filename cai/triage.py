@@ -18,9 +18,14 @@ Subcommands:
   publish   Collect again, refuse a stale snapshot, then update the managed labels and the single report
             issue. With --dry-run nothing is changed; the plan is printed.
 
+Review facts: the GitHub wrapper also reads each open PR's review threads and latest reviews over read-only
+GraphQL. Unresolved threads and configured review bots that have not reviewed the current head commit become
+facts and labels. Raw PRs without review data (inputs of the original script) keep the original behavior.
+
 Config arguments (collect and publish; use one form only):
-  --config FILE                  {"version": 1, "label_namespace", "report_title", "required_checks", "marker_id"}
-  --label-namespace / --report-title / --required-check (repeatable) / --marker-id
+  --config FILE                  {"version": 1, "label_namespace", "report_title", "required_checks", "marker_id",
+                                  "review_bots" (optional)}
+  --label-namespace / --report-title / --required-check (repeatable) / --marker-id / --review-bot (repeatable)
 
 Examples (read-only):
   python3 -I cai/triage.py collect --repo OWNER/REPO --out /tmp/snap.json
@@ -44,12 +49,29 @@ REPORT_LIMIT = 20
 BOT_LOGINS = {"app/github-actions", "github-actions[bot]", "github-actions"}
 GITHUB_LABEL_MAX = 50
 GITHUB_TITLE_MAX = 256
+# Review facts. GraphQL pages hold at most 100 nodes; a longer connection makes the facts incomplete (unknown).
+REVIEW_THREAD_LIMIT = 100   # review threads per PR
+REVIEW_LIMIT = 100          # latest reviews per PR searched for the head commit
+REVIEW_QUERY_CHUNK = 20     # PRs per GraphQL request
+REVIEW_BOTS_MAX = 10
+REVIEW_PATH_MAX = 200       # characters of a thread path kept in the snapshot
+REVIEW_THREADS_KEPT = 10    # unresolved threads kept per PR (snapshot size bound); the count stays exact
+LOGIN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?")
+REPO_RE = re.compile(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
+# Read-only fields per PR. Bot logins come without the REST "[bot]" suffix; _actor adds it.
+REVIEW_FIELDS = (
+    "number headRefOid "
+    f"reviewThreads(first: {REVIEW_THREAD_LIMIT}) {{ totalCount nodes {{ isResolved path "
+    "comments(first: 1) { nodes { author { __typename login } } } } } "
+    f"reviews(last: {REVIEW_LIMIT}) {{ totalCount nodes {{ author {{ __typename login }} commit {{ oid }} }} }}")
 
 # Managed label suffixes with (color, description); full names are namespace + suffix.
 LABEL_SPECS: Dict[str, Tuple[str, str]] = {
-    "ready": ("0e8a16", "Draft 아님, 충돌 없음, CI 통과, 리뷰 승인, 병합 가능 모두 확인됨"),
+    "ready": ("0e8a16", "Draft 아님, 충돌 없음, CI 통과, 리뷰 승인, 리뷰 대화 해결, 병합 가능 모두 확인됨"),
     "needs-review": ("fbca04", "리뷰 승인 대기"),
     "changes-requested": ("d93f0b", "리뷰가 변경을 요청함"),
+    "unresolved-review": ("d93f0b", "해결되지 않은 리뷰 대화가 있음"),
+    "bot-review-pending": ("fbca04", "설정된 리뷰 봇이 현재 head commit 을 아직 리뷰하지 않음"),
     "ci-failing": ("b60205", "실패한 검사가 있음"),
     "ci-pending": ("c5def5", "진행 중인 검사가 있음"),
     "conflict": ("b60205", "base 와 충돌"),
@@ -73,6 +95,7 @@ class TriageConfig:
     report_title: str = "PR 현황 보고서 (자동)"
     required_checks: Tuple[str, ...] = ("Lean build and audits",)  # required check names of the ruleset
     marker_id: str = "pr-triage"
+    review_bots: Tuple[str, ...] = ()  # REST logins such as "name[bot]" that must review the head commit
     _labels: Dict[str, Tuple[str, str]] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -91,6 +114,10 @@ class TriageConfig:
             raise ConfigError("required_checks 는 서로 다른 한 줄 이름의 비지 않은 목록이어야 한다")
         if not isinstance(self.marker_id, str) or not MARKER_ID_RE.fullmatch(self.marker_id):
             raise ConfigError("marker_id 는 소문자·숫자와 단일 '-' 만 쓴다 (예: pr-triage)")
+        bots = self.review_bots
+        if (not isinstance(bots, tuple) or len(bots) > REVIEW_BOTS_MAX or len(set(bots)) != len(bots)
+                or any(not isinstance(b, str) or not LOGIN_RE.fullmatch(b) for b in bots)):
+            raise ConfigError(f"review_bots 는 서로 다른 GitHub login (예: name[bot]) {REVIEW_BOTS_MAX} 개 이하의 목록이어야 한다")
         object.__setattr__(self, "_labels", {self.label_namespace + suffix: spec
                                              for suffix, spec in LABEL_SPECS.items()})
 
@@ -126,9 +153,12 @@ class TriageConfig:
 
     # ---- Serialization
     def as_dict(self) -> dict:
-        return {"version": CONFIG_VERSION, "label_namespace": self.label_namespace,
-                "report_title": self.report_title, "required_checks": list(self.required_checks),
-                "marker_id": self.marker_id}
+        out = {"version": CONFIG_VERSION, "label_namespace": self.label_namespace,
+               "report_title": self.report_title, "required_checks": list(self.required_checks),
+               "marker_id": self.marker_id}
+        if self.review_bots:  # omitted when empty so existing configs keep their config_id
+            out["review_bots"] = list(self.review_bots)
+        return out
 
     def config_id(self) -> str:
         blob = json.dumps(self.as_dict(), sort_keys=True, ensure_ascii=False)
@@ -139,17 +169,18 @@ class TriageConfig:
         """Load a versioned config object. Unknown keys and other versions are rejected; missing keys default."""
         if not isinstance(data, dict):
             raise ConfigError("설정은 JSON 객체여야 한다")
-        allowed = {"version", "label_namespace", "report_title", "required_checks", "marker_id"}
+        allowed = {"version", "label_namespace", "report_title", "required_checks", "marker_id", "review_bots"}
         unknown = set(data) - allowed
         if unknown:
             raise ConfigError(f"모르는 설정 키: {sorted(unknown)}")
         if data.get("version") != CONFIG_VERSION:
             raise ConfigError(f"설정 version 은 {CONFIG_VERSION} 이어야 한다")
         kwargs = {k: v for k, v in data.items() if k != "version"}
-        if "required_checks" in kwargs:
-            if not isinstance(kwargs["required_checks"], list):
-                raise ConfigError("required_checks 는 배열이어야 한다")
-            kwargs["required_checks"] = tuple(kwargs["required_checks"])
+        for key in ("required_checks", "review_bots"):
+            if key in kwargs:
+                if not isinstance(kwargs[key], list):
+                    raise ConfigError(f"{key} 는 배열이어야 한다")
+                kwargs[key] = tuple(kwargs[key])
         return cls(**kwargs)
 
 
@@ -220,6 +251,65 @@ def _opt_str(value) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
+def _actor(author: object) -> Tuple[str, bool]:
+    """(REST-style login, is a GitHub App bot). GraphQL omits the "[bot]" suffix that REST logins carry."""
+    if not isinstance(author, dict):
+        return "", False  # deleted account
+    login = author.get("login") if isinstance(author.get("login"), str) else ""
+    bot = author.get("__typename") == "Bot"
+    if bot and login and not login.endswith("[bot]"):
+        login += "[bot]"
+    return login, bot
+
+
+def _nodes(data: object, key: str) -> Tuple[List[dict], bool]:
+    """(nodes, complete) of a GraphQL connection. Missing, malformed, or truncated connections are incomplete."""
+    conn = data.get(key) if isinstance(data, dict) else None
+    nodes = conn.get("nodes") if isinstance(conn, dict) else None
+    total = conn.get("totalCount") if isinstance(conn, dict) else None
+    if not isinstance(nodes, list) or type(total) is not int:
+        return [], False
+    kept = [n for n in nodes if isinstance(n, dict)]
+    return kept, len(kept) == len(nodes) and total <= len(kept)
+
+
+def review_facts(data: object, head_sha: Optional[str], cfg: TriageConfig = DEFAULT) -> dict:
+    """Unresolved review threads and, per configured review bot, whether it reviewed the head commit.
+
+    head_reviewed values: True (a review by the bot has commit == head), False (complete reviews show none),
+    None (cannot tell: head unknown or moved since the PR list, or older reviews were not fetched).
+    Thread bodies are never read; only the path and the first comment's author are kept."""
+    threads, threads_complete = _nodes(data, "reviewThreads")
+    unresolved = []
+    for t in threads:
+        if t.get("isResolved") is True:
+            continue
+        if t.get("isResolved") is not False:
+            threads_complete = False  # counted as unresolved: surface rather than hide
+        comments = t["comments"].get("nodes") if isinstance(t.get("comments"), dict) else None
+        first = comments[0] if isinstance(comments, list) and comments and isinstance(comments[0], dict) else {}
+        login, bot = _actor(first.get("author"))
+        path = t.get("path") if isinstance(t.get("path"), str) else ""
+        unresolved.append({"path": path[:REVIEW_PATH_MAX], "author": login, "bot": bot})
+    reviews, reviews_complete = _nodes(data, "reviews")
+    same_head = head_sha is not None and isinstance(data, dict) and data.get("headRefOid") == head_sha
+    on_head = {_actor(r.get("author"))[0] for r in reviews
+               if isinstance(r.get("commit"), dict) and r["commit"].get("oid") == head_sha}
+    head_reviewed: Dict[str, Optional[bool]] = {}
+    for bot in cfg.review_bots:
+        if not same_head:
+            head_reviewed[bot] = None
+        elif bot in on_head:
+            head_reviewed[bot] = True
+        else:
+            head_reviewed[bot] = False if reviews_complete else None
+    return {"threads_complete": threads_complete,
+            "unresolved": len(unresolved),
+            "unresolved_bot": sum(1 for t in unresolved if t["bot"]),
+            "threads": unresolved[:REVIEW_THREADS_KEPT],
+            "head_reviewed": head_reviewed}
+
+
 def normalize_pr(raw: dict, cfg: TriageConfig = DEFAULT) -> dict:
     checks = sorted(
         ({"name": c.get("name") or c.get("context") or "?",
@@ -231,11 +321,12 @@ def normalize_pr(raw: dict, cfg: TriageConfig = DEFAULT) -> dict:
     labels = sorted(l.get("name", "") for l in (raw.get("labels") or []))
     author = raw.get("author") or {}
     is_draft = raw.get("isDraft")
-    return {
+    head_sha = _opt_str(raw.get("headRefOid"))
+    out = {
         "number": raw["number"],
         "title": raw.get("title") or "",
         "url": raw.get("url") or "",
-        "head_sha": _opt_str(raw.get("headRefOid")),
+        "head_sha": head_sha,
         "author": author.get("login") or "",
         "is_draft": is_draft if isinstance(is_draft, bool) else None,
         "mergeable": _opt_str(raw.get("mergeable")),
@@ -245,12 +336,33 @@ def normalize_pr(raw: dict, cfg: TriageConfig = DEFAULT) -> dict:
         "ci": ci_state(checks, cfg),
         "labels": labels,
     }
+    # GH.list_prs always attaches reviewData (None when GitHub returned no PR object). Raw PRs without the key
+    # come from the original script's inputs and keep its facts, digest, labels, and report unchanged.
+    if "reviewData" in raw:
+        out["review"] = review_facts(raw["reviewData"], head_sha, cfg)
+    return out
 
 
 def classify(pr: dict, cfg: TriageConfig = DEFAULT) -> Set[str]:
-    """Managed label set. Green CI without review approval is not ready. Missing or UNKNOWN facts give unknown."""
+    """Managed label set. Green CI without review approval is not ready. Missing or UNKNOWN facts give unknown.
+    Unresolved review threads or a configured bot that has not reviewed the head commit also keep a PR from
+    ready."""
     out: Set[str] = set()
     unknown = False
+    review_gate = False
+    review = pr.get("review")
+    if review is not None:
+        if review["unresolved"]:
+            out.add(cfg.label("unresolved-review"))
+            review_gate = True
+        if not review["threads_complete"]:
+            unknown = True
+        states = list(review["head_reviewed"].values())
+        if False in states:
+            out.add(cfg.label("bot-review-pending"))
+            review_gate = True
+        if None in states:
+            unknown = True
     if pr["is_draft"] is None:
         unknown = True
     elif pr["is_draft"]:
@@ -265,17 +377,17 @@ def classify(pr: dict, cfg: TriageConfig = DEFAULT) -> Set[str]:
         out.add(cfg.label("ci-pending"))
     elif pr["ci"] == "unknown":
         unknown = True
-    review = pr["review_decision"]
-    if review == "REVIEW_REQUIRED":
+    decision = pr["review_decision"]
+    if decision == "REVIEW_REQUIRED":
         out.add(cfg.label("needs-review"))
-    elif review == "CHANGES_REQUESTED":
+    elif decision == "CHANGES_REQUESTED":
         out.add(cfg.label("changes-requested"))
-    elif review != "APPROVED":
+    elif decision != "APPROVED":
         unknown = True
     if pr["head_sha"] is None:
         unknown = True
-    if (not unknown and pr["is_draft"] is False and pr["mergeable"] == "MERGEABLE"
-            and pr["ci"] == "pass" and review == "APPROVED"):
+    if (not unknown and not review_gate and pr["is_draft"] is False and pr["mergeable"] == "MERGEABLE"
+            and pr["ci"] == "pass" and decision == "APPROVED"):
         if pr["merge_state"] in ("CLEAN", "HAS_HOOKS"):
             out.add(cfg.label("ready"))
         elif pr["merge_state"] in (None, "UNKNOWN"):
@@ -300,9 +412,13 @@ def plan_labels(pr: dict, cfg: TriageConfig = DEFAULT) -> Tuple[List[str], List[
 
 def facts_digest(prs: List[dict]) -> str:
     """Digest of the facts (excluding current managed labels). Timestamps and URLs are not included."""
-    facts = [{k: p[k] for k in ("number", "title", "head_sha", "author", "is_draft", "mergeable",
-                                "merge_state", "review_decision", "checks", "ci")}
-             for p in sorted(prs, key=lambda p: p["number"])]
+    facts = []
+    for p in sorted(prs, key=lambda p: p["number"]):
+        fact = {k: p[k] for k in ("number", "title", "head_sha", "author", "is_draft", "mergeable",
+                                  "merge_state", "review_decision", "checks", "ci")}
+        if p.get("review") is not None:  # absent for original-script inputs, so their digest is unchanged
+            fact["review"] = p["review"]
+        facts.append(fact)
     blob = json.dumps({"v": DIGEST_VERSION, "prs": facts}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -371,6 +487,43 @@ DRAFT_TEXT = {True: "예", False: "아니오", None: "미확인"}
 MERGE_TEXT = {"MERGEABLE": "없음", "CONFLICTING": "있음"}
 CI_TEXT = {"pass": "통과", "fail": "실패", "pending": "진행 중", "unknown": "미확인"}
 REVIEW_TEXT = {"APPROVED": "승인", "REVIEW_REQUIRED": "승인 대기", "CHANGES_REQUESTED": "변경 요청"}
+HEAD_REVIEW_TEXT = {True: "완료", False: "대기", None: "미확인"}
+
+
+def _threads_text(review: Optional[dict]) -> str:
+    if review is None:
+        return "미확인"
+    text = str(review["unresolved"])
+    if review["unresolved_bot"]:
+        text += f" (봇 {review['unresolved_bot']})"
+    if not review["threads_complete"]:
+        text += " · 일부 미확인"
+    return text
+
+
+def _head_review_text(review: Optional[dict]) -> str:
+    if review is None:
+        return "미확인"
+    states = review["head_reviewed"]
+    if not states:
+        return "-"  # no review_bots configured
+    return ", ".join(f"{_clean(login, 60)} {HEAD_REVIEW_TEXT[state]}" for login, state in sorted(states.items()))
+
+
+def _thread_lines(prs: List[dict]) -> List[str]:
+    """One line per PR with unresolved threads: path and first author, never the comment text."""
+    lines = []
+    for p in prs:
+        review = p.get("review")
+        if not review or not review["unresolved"]:
+            continue
+        shown = [f"{_clean(t['path'], 120) or '?'} ({_clean(t['author'], 60) or '미상'})"
+                 for t in review["threads"]]
+        rest = review["unresolved"] - len(shown)
+        bots = f" (봇 {review['unresolved_bot']})" if review["unresolved_bot"] else ""
+        lines.append(f"- #{p['number']}: 미해결 {review['unresolved']}건{bots} · " + ", ".join(shown)
+                     + (f" 외 {rest}건" if rest > 0 else ""))
+    return lines
 
 
 def render(snapshot: dict, items: Dict[int, dict], run_url: str, now: str,
@@ -389,8 +542,11 @@ def render(snapshot: dict, items: Dict[int, dict], run_url: str, now: str,
     if not snapshot["prs"]:
         lines.append("열린 PR 이 없다.")
         return "\n".join(lines) + "\n"
-    lines += ["| PR | head | Draft | 충돌 | CI | 리뷰 | 라벨 | 우선순위 | 다음 조치 |",
-              "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    # Review columns appear only for snapshots with review facts, so original-script inputs render as before.
+    with_review = any("review" in p for p in snapshot["prs"])
+    review_head = " 미해결 대화 | 봇 head 리뷰 |" if with_review else ""
+    lines += ["| PR | head | Draft | 충돌 | CI | 리뷰 |" + review_head + " 라벨 | 우선순위 | 다음 조치 |",
+              "| --- " * (11 if with_review else 9) + "|"]
     order = {p: i for i, p in enumerate(PRIORITIES)}
     def rank(p: dict) -> Tuple[int, int]:
         return order.get(str(items.get(p["number"], {}).get("priority", "")), 9), p["number"]
@@ -398,11 +554,19 @@ def render(snapshot: dict, items: Dict[int, dict], run_url: str, now: str,
     for p in prs:
         it = items.get(p["number"], {"priority": "-", "next_action": "-"})
         labels = ", ".join(l.replace(cfg.label_namespace, "") for l in sorted(classify(p, cfg))) or "-"
+        review_cells = (f"| {_threads_text(p.get('review'))} | {_head_review_text(p.get('review'))} "
+                        if with_review else "")
         lines.append(
             f"| #{p['number']} {_clean(p['title'], 80)} | {(p['head_sha'] or '미확인')[:7]} "
             f"| {DRAFT_TEXT[p['is_draft']]} | {MERGE_TEXT.get(p['mergeable'] or '', '미확인')} "
             f"| {CI_TEXT[p['ci']]} | {REVIEW_TEXT.get(p['review_decision'] or '', '미확인')} "
+            + review_cells +
             f"| {labels} | {it['priority']} | {it['next_action']} |")
+    threads = _thread_lines(prs)
+    if threads:
+        lines += ["", "### 미해결 리뷰 대화", "",
+                  "파일 경로와 첫 코멘트 작성자만 적는다. 병합 전에 반영하거나 이유를 답글로 남긴 뒤 대화를 해결 처리한다.",
+                  ""] + threads
     return "\n".join(lines) + "\n"
 
 
@@ -437,9 +601,41 @@ class GH:
         return out
 
     def list_prs(self) -> List[dict]:
-        return json.loads(self._run([
+        """Open PRs, each with reviewData (its review threads and latest reviews, or None) attached."""
+        prs = json.loads(self._run([
             "pr", "list", "-R", self.repo, "--state", "open", "--limit", str(PR_LIMIT + 1), "--json",
             "number,title,url,headRefOid,isDraft,mergeable,mergeStateStatus,reviewDecision,author,labels,statusCheckRollup"]))
+        if len(prs) <= PR_LIMIT:  # collect refuses a longer list, so it is not worth querying
+            data = self.review_data([p.get("number") for p in prs])
+            for p in prs:
+                p["reviewData"] = data.get(p["number"])
+        return prs
+
+    def review_data(self, numbers: List[object]) -> Dict[int, Optional[dict]]:
+        """Read-only GraphQL query of review threads and reviews, REVIEW_QUERY_CHUNK PRs per request.
+        Only validated PR numbers are placed in the query text; owner and name are variables."""
+        match = REPO_RE.fullmatch(self.repo)
+        if not match:
+            raise TriageError(f"저장소 이름 형식이 틀렸다: {self.repo!r}")
+        if any(type(n) is not int or n <= 0 for n in numbers):
+            raise TriageError("PR 번호가 양의 정수가 아니다")
+        unique = list(dict.fromkeys(numbers))  # a repeated alias would be a GraphQL error
+        out: Dict[int, Optional[dict]] = {}
+        for start in range(0, len(unique), REVIEW_QUERY_CHUNK):
+            chunk = unique[start:start + REVIEW_QUERY_CHUNK]
+            fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ {REVIEW_FIELDS} }}" for n in chunk)
+            query = ("query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { "
+                     + fields + " } }")
+            reply = json.loads(self._run(["api", "graphql", "-f", f"query={query}",
+                                          "-f", f"owner={match.group(1)}", "-f", f"name={match.group(2)}"]))
+            data = reply.get("data") if isinstance(reply, dict) else None
+            repo = data.get("repository") if isinstance(data, dict) else None
+            if not isinstance(repo, dict) or reply.get("errors"):
+                raise TriageError("리뷰 대화를 읽지 못했다. 일부만 읽은 사실로 게시하지 않는다.")
+            for n in chunk:
+                node = repo.get(f"p{n}")
+                out[n] = node if isinstance(node, dict) and node.get("number") == n else None
+        return out
 
     def list_report_issues(self) -> List[dict]:
         return json.loads(self._run([
@@ -560,18 +756,21 @@ def _add_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--report-title")
     parser.add_argument("--required-check", action="append", dest="required_checks")
     parser.add_argument("--marker-id")
+    parser.add_argument("--review-bot", action="append", dest="review_bots")
 
 
 def config_from_args(args: argparse.Namespace) -> TriageConfig:
-    flags = {k: getattr(args, k) for k in ("label_namespace", "report_title", "required_checks", "marker_id")
+    flags = {k: getattr(args, k)
+             for k in ("label_namespace", "report_title", "required_checks", "marker_id", "review_bots")
              if getattr(args, k) is not None}
     if args.config:
         if flags:
             raise ConfigError("--config 와 개별 설정 인자를 함께 쓸 수 없다")
         with open(args.config, encoding="utf-8") as f:
             return TriageConfig.from_mapping(json.load(f))
-    if "required_checks" in flags:
-        flags["required_checks"] = tuple(flags["required_checks"])
+    for key in ("required_checks", "review_bots"):
+        if key in flags:
+            flags[key] = tuple(flags[key])
     return TriageConfig(**flags)
 
 
@@ -615,8 +814,10 @@ def main(argv: Optional[List[str]] = None) -> int:
               f"사실 변화 {snap['facts_changed']}, 라벨 어긋남 {snap['label_drift']}")
         for pr in snap["prs"]:
             add, remove = plan_labels(pr, cfg)
+            review = pr.get("review")
+            threads = f" unresolved={review['unresolved']} bots={review['head_reviewed']}" if review else ""
             print(f"  #{pr['number']} head={(pr['head_sha'] or '?')[:7]} ci={pr['ci']} review={pr['review_decision']} "
-                  f"mergeable={pr['mergeable']} -> {sorted(classify(pr, cfg))} (+{add} -{remove})")
+                  f"mergeable={pr['mergeable']}{threads} -> {sorted(classify(pr, cfg))} (+{add} -{remove})")
         if args.github_output:
             with open(args.github_output, "a", encoding="utf-8") as f:
                 f.write(f"facts_changed={'true' if snap['facts_changed'] else 'false'}\n")

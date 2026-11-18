@@ -203,7 +203,7 @@ class OnboardingTests(unittest.TestCase):
         self.assertFalse((self.root / ".github").exists())
 
     def test_triage_lane_errors_name_the_option(self):
-        for lane in ("x" * 33, "a--b", "x-"):
+        for lane in ("x" * 32, "a--b", "x-"):
             result = self.cli("triage", "--lane", lane, "--required-check", "CI", "--write")
             self.assertEqual(result.returncode, 1)
             self.assertIn("Triage --lane", result.stderr)
