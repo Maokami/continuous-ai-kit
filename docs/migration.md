@@ -18,7 +18,9 @@ only one scheduled implementation may run at once.
 Replace only the PR triage caller with pr-triage.yml and the default TriageConfig. Preserve the
 `claude-pr-triage` concurrency group and existing two-hour schedule. Snapshot config_id prevents
 publishing with different configuration; old snapshots work only with default configuration.
-Labels, report markers, Korean output, and facts digest remain compatible.
+Report markers and Korean output remain compatible. Since 2026-11-18 triage also reads review threads: two
+managed labels were added, the facts digest differs from the original script (one report rewrite after the
+switch), and rolling back to the old script leaves those two labels on PRs. See docs/triage.md.
 
 Do not move the write-capable hunter, its GitHub App token, or human approval/merge policy.
 The migration PR follows the repository's human review requirement. A reusable triage workflow

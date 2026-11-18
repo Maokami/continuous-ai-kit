@@ -360,5 +360,91 @@ class GraphQLArguments(unittest.TestCase):
             T.GH("not a repo", runner=lambda a, s: (0, "[]", "")).review_data([1])
 
 
+
+class ReviewFixes(unittest.TestCase):
+    """Bounds and edge cases found in review: body size, pagination, gh failures, login case."""
+
+    def test_worst_case_report_fits_github_body_limit(self):
+        logins = tuple(f"{'b' * 34}{i}[bot]" for i in range(T.REVIEW_BOTS_MAX))
+        cfg = T.TriageConfig(required_checks=("CI",), review_bots=logins)
+        threads = [thread(False, ("|" * 300) + str(i), bot("x" * 39)) for i in range(T.REVIEW_THREADS_KEPT + 5)]
+        prs = []
+        for n in range(1, T.PR_LIMIT + 1):
+            raw = raw_pr(data(threads, [review(OLD)], number=n), number=n)
+            raw["title"] = "|" * 500
+            prs.append(T.normalize_pr(raw, cfg))
+        items = {p["number"]: {"priority": "보통", "next_action": "|" * 160} for p in prs}
+        body = T.render({"digest": "0" * 64, "prs": prs}, items, "https://run/" + "9" * 30, "now", cfg)
+        self.assertLessEqual(len(body), T.GITHUB_BODY_MAX)
+        self.assertIn("길이 제한으로 생략했다", body)
+
+    def test_oversized_body_is_refused_before_writes(self):
+        gh = FakeGH([raw_pr(data([thread(False)], [review(OLD)]))], BOTS)
+        snap = T.collect(gh, BOTS)
+        with mock.patch.object(T, "GITHUB_BODY_MAX", 10), self.assertRaises(T.TriageError):
+            T.publish(gh, snap, ai_for(snap), "run", "now", BOTS)
+        self.assertEqual(gh.mutations, [])
+
+    def test_login_case_does_not_matter(self):
+        cfg = T.TriageConfig(required_checks=("CI",), review_bots=("ChatGPT-Codex-Connector[bot]",))
+        facts = T.review_facts(data(reviews=[review(HEAD)]), HEAD, cfg)
+        self.assertEqual(facts["head_reviewed"], {"ChatGPT-Codex-Connector[bot]": True})
+
+    def test_partial_thread_list_is_marked(self):
+        body = Report().render([raw_pr(data([thread(False)], [review(HEAD)], thread_total=900))])
+        line = next(l for l in body.splitlines() if l.startswith("- #7"))
+        self.assertIn("(일부 미확인)", line)
+
+    def paged_gh(self, pages, last_has_next=False):
+        """PR 7 whose threads come in `pages` pages of two resolved threads each."""
+        calls = []
+
+        def page(i):
+            more = i < pages - 1 or last_has_next
+            return {"totalCount": 2 * pages + (1 if last_has_next else 0),
+                    "pageInfo": {"hasNextPage": more, "endCursor": f"c{i}"},
+                    "nodes": [thread(True, f"p{i}a"), thread(True, f"p{i}b")]}
+
+        def runner(args, stdin):
+            calls.append(args)
+            if args[:2] == ["pr", "list"]:
+                return 0, json.dumps([{"number": 7, "headRefOid": HEAD}]), ""
+            if "-F" in args:  # a later page; the cursor names the previous page
+                previous = int(args[args.index("-f", 8) + 1].split("=c", 1)[1])
+                return 0, json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": page(previous + 1)}}}}), ""
+            node = dict(data(reviews=[review(HEAD)]), reviewThreads=page(0))
+            return 0, json.dumps({"data": {"repository": {"p7": node}}}), ""
+        return T.GH("o/r", runner=runner), calls
+
+    def test_threads_beyond_one_page_are_followed(self):
+        gh, calls = self.paged_gh(3)
+        raw = gh.list_prs()[0]
+        self.assertEqual(len(raw["reviewData"]["reviewThreads"]["nodes"]), 6)
+        facts = T.review_facts(raw["reviewData"], HEAD, BOTS)
+        self.assertTrue(facts["threads_complete"])
+        later = [c for c in calls if "-F" in c]
+        self.assertEqual(len(later), 2)
+        self.assertEqual(later[0][-4:], ["-F", "number=7", "-f", "cursor=c0"])
+        self.assertIn("after: $cursor", later[0][3])
+        self.assertNotIn("mutation", T.THREAD_PAGE_QUERY)
+
+    def test_page_limit_leaves_threads_incomplete(self):
+        gh, calls = self.paged_gh(T.REVIEW_THREAD_PAGES, last_has_next=True)
+        raw = gh.list_prs()[0]
+        self.assertEqual(len([c for c in calls if "-F" in c]), T.REVIEW_THREAD_PAGES - 1)
+        self.assertFalse(T.review_facts(raw["reviewData"], HEAD, BOTS)["threads_complete"])
+
+    def test_gh_failure_becomes_triage_error(self):
+        def runner(args, stdin):
+            if args[:2] == ["pr", "list"]:
+                return 0, json.dumps([{"number": 3}]), ""
+            return 1, "", "GraphQL: API rate limit exceeded"
+        with self.assertRaises(T.TriageError):
+            T.GH("o/r", runner=runner).list_prs()
+
+    def test_ready_description_is_unchanged(self):
+        self.assertEqual(T.LABEL_SPECS["ready"][1], "Draft 아님, 충돌 없음, CI 통과, 리뷰 승인, 병합 가능 모두 확인됨")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -50,24 +50,35 @@ BOT_LOGINS = {"app/github-actions", "github-actions[bot]", "github-actions"}
 GITHUB_LABEL_MAX = 50
 GITHUB_TITLE_MAX = 256
 # Review facts. GraphQL pages hold at most 100 nodes; a longer connection makes the facts incomplete (unknown).
-REVIEW_THREAD_LIMIT = 100   # review threads per PR
+REVIEW_THREAD_LIMIT = 100   # review threads per GraphQL page
+REVIEW_THREAD_PAGES = 5     # pages read per PR (500 threads, resolved ones included); more gives unknown
 REVIEW_LIMIT = 100          # latest reviews per PR searched for the head commit
 REVIEW_QUERY_CHUNK = 20     # PRs per GraphQL request
 REVIEW_BOTS_MAX = 10
 REVIEW_PATH_MAX = 200       # characters of a thread path kept in the snapshot
 REVIEW_THREADS_KEPT = 10    # unresolved threads kept per PR (snapshot size bound); the count stays exact
+REPORT_THREAD_CHARS = 15000 # thread list budget; with the bounded table the body stays under GITHUB_BODY_MAX
+REPORT_BOT_CELL = 120       # characters of the bot head-review cell
+GITHUB_BODY_MAX = 65536
 LOGIN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?")
 REPO_RE = re.compile(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
 # Read-only fields per PR. Bot logins come without the REST "[bot]" suffix; _actor adds it.
+THREAD_NODE = "isResolved path comments(first: 1) { nodes { author { __typename login } } }"
 REVIEW_FIELDS = (
     "number headRefOid "
-    f"reviewThreads(first: {REVIEW_THREAD_LIMIT}) {{ totalCount nodes {{ isResolved path "
-    "comments(first: 1) { nodes { author { __typename login } } } } } "
+    f"reviewThreads(first: {REVIEW_THREAD_LIMIT}) {{ totalCount pageInfo {{ hasNextPage endCursor }} "
+    f"nodes {{ {THREAD_NODE} }} }} "
     f"reviews(last: {REVIEW_LIMIT}) {{ totalCount nodes {{ author {{ __typename login }} commit {{ oid }} }} }}")
+# Later thread pages of one PR; the cursor is a GraphQL variable.
+THREAD_PAGE_QUERY = (
+    "query($owner: String!, $name: String!, $number: Int!, $cursor: String!) { "
+    "repository(owner: $owner, name: $name) { pullRequest(number: $number) { "
+    f"reviewThreads(first: {REVIEW_THREAD_LIMIT}, after: $cursor) {{ pageInfo {{ hasNextPage endCursor }} "
+    f"nodes {{ {THREAD_NODE} }} }} }} }} }}")
 
 # Managed label suffixes with (color, description); full names are namespace + suffix.
 LABEL_SPECS: Dict[str, Tuple[str, str]] = {
-    "ready": ("0e8a16", "Draft 아님, 충돌 없음, CI 통과, 리뷰 승인, 리뷰 대화 해결, 병합 가능 모두 확인됨"),
+    "ready": ("0e8a16", "Draft 아님, 충돌 없음, CI 통과, 리뷰 승인, 병합 가능 모두 확인됨"),
     "needs-review": ("fbca04", "리뷰 승인 대기"),
     "changes-requested": ("d93f0b", "리뷰가 변경을 요청함"),
     "unresolved-review": ("d93f0b", "해결되지 않은 리뷰 대화가 있음"),
@@ -293,13 +304,14 @@ def review_facts(data: object, head_sha: Optional[str], cfg: TriageConfig = DEFA
         unresolved.append({"path": path[:REVIEW_PATH_MAX], "author": login, "bot": bot})
     reviews, reviews_complete = _nodes(data, "reviews")
     same_head = head_sha is not None and isinstance(data, dict) and data.get("headRefOid") == head_sha
-    on_head = {_actor(r.get("author"))[0] for r in reviews
+    # GitHub logins are case-insensitive.
+    on_head = {_actor(r.get("author"))[0].casefold() for r in reviews
                if isinstance(r.get("commit"), dict) and r["commit"].get("oid") == head_sha}
     head_reviewed: Dict[str, Optional[bool]] = {}
     for bot in cfg.review_bots:
         if not same_head:
             head_reviewed[bot] = None
-        elif bot in on_head:
+        elif bot.casefold() in on_head:
             head_reviewed[bot] = True
         else:
             head_reviewed[bot] = False if reviews_complete else None
@@ -507,22 +519,30 @@ def _head_review_text(review: Optional[dict]) -> str:
     states = review["head_reviewed"]
     if not states:
         return "-"  # no review_bots configured
-    return ", ".join(f"{_clean(login, 60)} {HEAD_REVIEW_TEXT[state]}" for login, state in sorted(states.items()))
+    return _clean(", ".join(f"{login} {HEAD_REVIEW_TEXT[state]}" for login, state in sorted(states.items())),
+                  REPORT_BOT_CELL)
 
 
 def _thread_lines(prs: List[dict]) -> List[str]:
-    """One line per PR with unresolved threads: path and first author, never the comment text."""
-    lines = []
-    for p in prs:
-        review = p.get("review")
-        if not review or not review["unresolved"]:
-            continue
+    """One line per PR with unresolved threads: path and first author, never the comment text. The list stops at
+    REPORT_THREAD_CHARS so the issue body stays within GitHub's limit."""
+    lines: List[str] = []
+    used = 0
+    pending = [p for p in prs if p.get("review") and p["review"]["unresolved"]]
+    for i, p in enumerate(pending):
+        review = p["review"]
         shown = [f"{_clean(t['path'], 120) or '?'} ({_clean(t['author'], 60) or '미상'})"
                  for t in review["threads"]]
         rest = review["unresolved"] - len(shown)
         bots = f" (봇 {review['unresolved_bot']})" if review["unresolved_bot"] else ""
-        lines.append(f"- #{p['number']}: 미해결 {review['unresolved']}건{bots} · " + ", ".join(shown)
-                     + (f" 외 {rest}건" if rest > 0 else ""))
+        partial = "" if review["threads_complete"] else " (일부 미확인)"
+        line = (f"- #{p['number']}: 미해결 {review['unresolved']}건{bots}{partial} · " + ", ".join(shown)
+                + (f" 외 {rest}건" if rest > 0 else ""))
+        if used + len(line) + 1 > REPORT_THREAD_CHARS:
+            lines.append(f"- 외 PR {len(pending) - i}개는 길이 제한으로 생략했다. 각 PR 화면에서 확인한다.")
+            break
+        lines.append(line)
+        used += len(line) + 1
     return lines
 
 
@@ -626,16 +646,45 @@ class GH:
             fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ {REVIEW_FIELDS} }}" for n in chunk)
             query = ("query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { "
                      + fields + " } }")
-            reply = json.loads(self._run(["api", "graphql", "-f", f"query={query}",
-                                          "-f", f"owner={match.group(1)}", "-f", f"name={match.group(2)}"]))
-            data = reply.get("data") if isinstance(reply, dict) else None
-            repo = data.get("repository") if isinstance(data, dict) else None
-            if not isinstance(repo, dict) or reply.get("errors"):
-                raise TriageError("리뷰 대화를 읽지 못했다. 일부만 읽은 사실로 게시하지 않는다.")
+            repo = self._graphql(query, match, {})
             for n in chunk:
                 node = repo.get(f"p{n}")
                 out[n] = node if isinstance(node, dict) and node.get("number") == n else None
+                if out[n] is not None:
+                    self._more_threads(n, out[n], match)
         return out
+
+    def _graphql(self, query: str, match: "re.Match[str]", variables: Dict[str, str]) -> dict:
+        args = ["api", "graphql", "-f", f"query={query}", "-f", f"owner={match.group(1)}",
+                "-f", f"name={match.group(2)}"]
+        for key, value in variables.items():
+            args += ["-F" if key == "number" else "-f", f"{key}={value}"]
+        try:
+            reply = json.loads(self._run(args))
+        except (RuntimeError, json.JSONDecodeError) as e:
+            raise TriageError(f"리뷰 대화를 읽지 못했다. 일부만 읽은 사실로 게시하지 않는다: {str(e)[:200]}") from None
+        data = reply.get("data") if isinstance(reply, dict) else None
+        repo = data.get("repository") if isinstance(data, dict) else None
+        if not isinstance(repo, dict) or reply.get("errors"):
+            raise TriageError("리뷰 대화를 읽지 못했다. 일부만 읽은 사실로 게시하지 않는다.")
+        return repo
+
+    def _more_threads(self, number: int, node: dict, match: "re.Match[str]") -> None:
+        """Append later review-thread pages (resolved threads count toward totalCount) up to
+        REVIEW_THREAD_PAGES. A page that cannot be followed leaves the connection short, which is unknown."""
+        conn = node.get("reviewThreads")
+        for _ in range(REVIEW_THREAD_PAGES - 1):
+            info = conn.get("pageInfo") if isinstance(conn, dict) else None
+            cursor = info.get("endCursor") if isinstance(info, dict) else None
+            if not (isinstance(info, dict) and info.get("hasNextPage") is True and isinstance(cursor, str)
+                    and isinstance(conn.get("nodes"), list)):
+                return
+            repo = self._graphql(THREAD_PAGE_QUERY, match, {"number": str(number), "cursor": cursor})
+            page = (repo.get("pullRequest") or {}).get("reviewThreads")
+            if not isinstance(page, dict) or not isinstance(page.get("nodes"), list):
+                return
+            conn["nodes"] += page["nodes"]
+            conn["pageInfo"] = page.get("pageInfo")
 
     def list_report_issues(self) -> List[dict]:
         return json.loads(self._run([
@@ -729,6 +778,9 @@ def publish(gh, snapshot: dict, ai: Optional[object], run_url: str, now: str,
     plans = [(p, plan_labels(p, cfg)) for p in fresh["prs"]]
     if not need_body and all(plan == ([], []) for _, plan in plans):
         return "already-published"
+    body = render(snapshot, items, run_url, now, cfg) if need_body else ""
+    if len(body) > GITHUB_BODY_MAX:  # checked before any write; the bounded render should never get here
+        raise TriageError(f"보고서 본문이 GitHub 상한 {GITHUB_BODY_MAX} 자를 넘는다 ({len(body)} 자)")
     needed = {l for _, (add, _) in plans for l in add} | ({cfg.report_label} if need_body and not report else set())
     for name in sorted(needed):
         if not gh.label_exists(name):
@@ -740,7 +792,6 @@ def publish(gh, snapshot: dict, ai: Optional[object], run_url: str, now: str,
             gh.remove_label(p["number"], name)
     if not need_body:
         return "labels-only"
-    body = render(snapshot, items, run_url, now, cfg)
     if report:
         gh.update_issue(report["number"], body)
     else:

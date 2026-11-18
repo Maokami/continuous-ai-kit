@@ -48,8 +48,10 @@
 ## 리뷰 대화와 리뷰 봇 사실
 
 `GH.list_prs`는 `gh pr list` 다음에 읽기 전용 GraphQL 질의 하나로 PR 20개씩 `reviewThreads(first: 100)`와
-`reviews(last: 100)`를 읽어 각 PR에 `reviewData`로 붙인다. 질의에 들어가는 값은 검증한 PR 번호뿐이고,
-owner와 저장소 이름은 GraphQL 변수다. GraphQL 오류나 `repository` 누락은 `TriageError`(종료 1)다.
+`reviews(last: 100)`를 읽어 각 PR에 `reviewData`로 붙인다. 스레드가 100개를 넘는 PR은 cursor로 다음 쪽을 더
+읽어 PR당 500개(5쪽)까지 본다. `totalCount`는 해결된 스레드도 세기 때문이다. 질의 본문에 들어가는 값은 검증한
+PR 번호뿐이고, owner·저장소 이름·PR 번호·cursor는 GraphQL 변수다. `gh` 실패(rate limit 포함), GraphQL 오류,
+`repository` 누락은 `TriageError`(종료 1)다.
 
 `normalize_pr`가 PR 사실에 더하는 `review` 항목:
 
@@ -58,11 +60,11 @@ owner와 저장소 이름은 GraphQL 변수다. GraphQL 오류나 `repository` �
 | `unresolved` | `isResolved == false`인 스레드 수 |
 | `unresolved_bot` | 그중 첫 코멘트 작성자가 GitHub App 봇(`__typename == "Bot"`)인 수 |
 | `threads` | 미해결 스레드 처음 10개의 `{path, author, bot}`. 경로는 200자에서 자른다. 코멘트 본문은 읽지 않는다. 수는 `unresolved`가 정확히 센다. |
-| `threads_complete` | 스레드가 100개를 넘거나 응답이 형식에 맞지 않으면 `false` |
+| `threads_complete` | 스레드가 500개를 넘거나 응답이 형식에 맞지 않으면 `false` |
 | `head_reviewed` | `review_bots`의 login마다 `true`(그 봇의 review `commit.oid`가 head), `false`(받은 review 전체에 없음), `null`(판단 불가) |
 
-- GraphQL은 봇 login에 `[bot]`을 붙이지 않는다. `_actor`가 REST 형식으로 맞춘 뒤 `review_bots`와 비교한다.
-  같은 이름의 사람 계정은 봇으로 치지 않는다.
+- GraphQL은 봇 login에 `[bot]`을 붙이지 않는다. `_actor`가 REST 형식으로 맞춘 뒤 `review_bots`와 대소문자 구분
+  없이 비교한다. 같은 이름의 사람 계정은 봇으로 치지 않는다.
 - `head_reviewed`가 `null`인 경우: head를 모름, PR 목록 이후 head가 바뀜, review가 100개를 넘어 앞부분을 못 받았는데
   최근 100개에 없음, GitHub가 PR 객체를 주지 않음.
 - 판정 근거는 review의 `commit.oid`뿐이다. 이슈 코멘트, 반응(👍), 봇 본문 안의 표식은 쓰지 않는다.
@@ -73,9 +75,14 @@ owner와 저장소 이름은 GraphQL 변수다. GraphQL 오류나 `repository` �
 - `unknown`: `threads_complete == false` 또는 `head_reviewed`에 `null`이 있음
 - 위 두 라벨 중 하나라도 있으면 다른 사실이 모두 좋아도 `ready`나 `blocked`를 붙이지 않는다.
 
-보고서에는 `미해결 대화`(예: `2 (봇 2)`)와 `봇 head 리뷰`(예: `name[bot] 대기`, 봇 설정이 없으면 `-`) 열이 붙고,
-미해결 스레드가 있으면 표 아래 `미해결 리뷰 대화` 절에 PR마다 경로와 첫 작성자를 10개까지 적는다. 경로와 login은
-제목과 같은 방식으로 한 줄로 만들고 표·HTML·멘션·digest 마커를 무력화한다.
+보고서에는 `미해결 대화`(예: `2 (봇 2)`)와 `봇 head 리뷰`(예: `name[bot] 대기`, 봇 설정이 없으면 `-`, 120자에서
+자름) 열이 붙고, 미해결 스레드가 있으면 표 아래 `미해결 리뷰 대화` 절에 PR마다 경로와 첫 작성자를 10개까지 적는다.
+경로와 login은 제목과 같은 방식으로 한 줄로 만들고 표·HTML·멘션·digest 마커를 무력화한다. Markdown 링크·강조는
+제목처럼 그대로 남는다.
+
+**본문 길이:** GitHub 이슈 본문 상한은 65,536자다. 스레드 절은 15,000자에서 멈추고 나머지 PR 수만 적는다. PR 100개,
+봇 10개, PR마다 미해결 15개·긴 경로인 최악의 입력에서 본문은 약 60,600자다(`tests/test_triage_review.py`).
+`publish`는 본문을 라벨보다 먼저 만들고, 상한을 넘으면 아무것도 쓰지 않고 `TriageError`로 끝난다.
 
 `review` 항목은 사실 digest에 들어간다. 스레드가 생기거나 해결되면 사실이 바뀐 것으로 보고 보고서를 다시 쓴다.
 게시 직전 다시 읽은 스레드가 다르면 stale(종료 3)이다.
@@ -90,6 +97,18 @@ digest·라벨·보고서가 원본과 같다. 실제 `GH` 래퍼는 항상 `rev
 - 봇이 지적할 것이 없을 때 review를 남기지 않으면(예: Codex는 👍 반응과 요약 이슈 코멘트만 남긴다)
   `bot-review-pending`이 계속 붙는다. 사람이 봇의 요약을 보고 판단한다.
 - 스레드의 `isOutdated`는 쓰지 않는다. 낡은 줄에 달린 대화도 해결 처리 전까지 미해결이다.
+- 미해결 대화 판정은 끌 수 없다. `review_bots`와 상관없이 미해결 대화가 있으면 `ready`가 빠진다.
+- review는 최근 100개만 본다. review가 100개를 넘고 그 안에 봇의 head review가 없으면 `false`가 아니라 `null`이다.
+- GraphQL 비용: PR 20개 질의 한 번이 약 20 point다. PR 100개면 collect·publish 한 번씩 합쳐 약 200 point로,
+  `GITHUB_TOKEN`의 시간당 GraphQL 한도를 다른 호출과 나눠 쓴다. 하루 몇 번 도는 일정에서는 문제가 없다.
+
+**업그레이드 시 바뀌는 것 (2026-11-18):**
+- 관리 라벨이 2개 늘었다. 가장 긴 접미사가 18자라서 `label_namespace`는 32자까지다(이전 33자).
+  33자 namespace를 쓰던 consumer는 올리면 설정 오류로 멈춘다. `onboard.py triage --lane`도 31자까지다.
+- 실제 `GH`로 모은 사실에는 `review`가 들어가므로 digest가 원본 스크립트와 달라진다. 올린 뒤 첫 실행에서 보고서를
+  한 번 다시 쓰고 모델을 한 번 부른다.
+- 원본 스크립트로 되돌리면 `unresolved-review`, `bot-review-pending` 라벨은 원본이 관리하지 않으므로 PR에 남는다.
+  사람이 지운다.
 
 ## API
 
@@ -149,6 +168,9 @@ python3 -I cai/triage.py publish  --repo O/R --snapshot snap.json [--ai ai.json]
 - collect와 publish에는 같은 설정 인자를 넘긴다.
 
 ## 검증 결과 (2026-11-10)
+
+리뷰 대화 사실을 더하기 전 revision의 결과다. 이후 바뀐 점은 위 "업그레이드 시 바뀌는 것"에 있다. `reviewData`가
+없는 입력에 대해서는 원본 시험 25개와 golden 값이 그대로 통과한다.
 
 - **SW 원본 시험 25개:** `tests/test_triage_sw_compat.py`로 옮겼다. 원본과 다른 곳은 docstring과 import 경로 두 곳
   뿐이고, 25개 모두 통과한다. 26번째인 셸 시험은 위에 적은 대로 workflow 쪽으로 옮길 대상이다.

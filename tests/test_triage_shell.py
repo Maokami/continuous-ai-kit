@@ -98,13 +98,15 @@ class Structure(unittest.TestCase):
         self.assertEqual(perms["record-quota"], {"contents": "read", "issues": "write"})
         self.assertNotIn("id-token", TEXT)
         self.assertEqual([n for n, b in js.items() if "secrets." in b], ["summarize"])
-        # Both jobs that run `triage.py collect` also run the review-thread GraphQL query. It only reads
-        # reviewThreads and reviews, which the pull-requests permission above already covers.
+        # Both jobs that run `triage.py collect` also run the review-thread GraphQL queries. They only read
+        # reviewThreads and reviews (with the review's commit), covered by pull-requests and contents above.
         for name in ("collect", "publish"):
             self.assertIn(perms[name]["pull-requests"], ("read", "write"))
-        self.assertNotIn("mutation", T.REVIEW_FIELDS)
-        self.assertIn("reviewThreads(", T.REVIEW_FIELDS)
-        self.assertIn("pull-requests permission", TEXT.split("\nname:", 1)[0])
+            self.assertEqual(perms[name]["contents"], "read")
+        for query in (T.REVIEW_FIELDS, T.THREAD_PAGE_QUERY):
+            self.assertNotIn("mutation", query)
+            self.assertIn("reviewThreads(", query)
+        self.assertIn("pull-requests and\n# contents read permissions", TEXT.split("\nname:", 1)[0])
 
     def test_self_checkout_and_revision_check_in_every_job(self):
         for name, block in jobs().items():
